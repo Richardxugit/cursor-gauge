@@ -1,0 +1,381 @@
+import XCTest
+@testable import CursorGaugeCore
+
+// MARK: - Doubles
+
+private final class StubCredentials: CredentialsProviding {
+    var invalidateCount = 0
+    var error: TokenError?
+
+    func load() throws -> CursorCredentials {
+        if let error { throw error }
+        return CursorCredentials(
+            accessToken: "TOKEN",
+            userSub: "user_ABC",
+            expiresAt: Date(timeIntervalSince1970: 1_790_839_766)
+        )
+    }
+
+    func invalidate() { invalidateCount += 1 }
+}
+
+/// `fetchSnapshot` issues three requests concurrently, so the recorder has to be
+/// thread-safe — without the lock the appends race and the test binary segfaults.
+private final class StubTransport: Transport, @unchecked Sendable {
+    /// path → (body, status)
+    var routes: [String: (String, Int)] = [:]
+
+    private let lock = NSLock()
+    private var recorded: [URLRequest] = []
+
+    var requests: [URLRequest] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        lock.lock()
+        recorded.append(request)
+        let route = routes[request.url?.path ?? ""]
+        lock.unlock()
+
+        let (body, status) = route ?? ("{}", 404)
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil
+        )!
+        return (Data(body.utf8), response)
+    }
+}
+
+// MARK: - Fixtures captured from the live account
+
+private enum Fixture {
+    static let authMe = """
+    {"email":"someone@example.com","name":"Someone","sub":"user_ABC","id":307093031}
+    """
+
+    static let teams = """
+    {"teams":[
+      {"name":"bugbot","id":28605405,"role":"TEAM_ROLE_MEMBER","isEnterprise":true},
+      {"name":"tech-digital","id":27362705,"role":"TEAM_ROLE_MEMBER","isEnterprise":true}
+    ]}
+    """
+
+    /// The team that actually carries the per-user limit.
+    static let spendWithLimit = """
+    {"teamMemberSpend":[
+      {"userId":111,"name":"Someone Else","email":"else@example.com","role":"TEAM_ROLE_MEMBER","overallSpendCents":900},
+      {"userId":307093031,"name":"Someone","email":"someone@example.com","role":"TEAM_ROLE_MEMBER",
+       "overallSpendCents":251,"monthlyLimitDollars":200,"effectivePerUserLimitDollars":200}
+    ],
+     "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000","totalMembers":105}
+    """
+
+    /// A team the user belongs to but which publishes no limit for them.
+    static let spendWithoutLimit = """
+    {"teamMemberSpend":[
+      {"userId":307093031,"name":"Someone","email":"someone@example.com","role":"TEAM_ROLE_MEMBER","overallSpendCents":0}
+    ],
+     "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000","totalMembers":403}
+    """
+
+    static let aggregated = """
+    {"aggregations":[{"modelIntent":"composer-2.5-fast","inputTokens":"319174","outputTokens":"27985",
+      "cacheReadTokens":"3732298","totalCents":308.809726,"tier":1}],
+     "totalInputTokens":"319174","totalCostCents":308.809726}
+    """
+
+    static let events = """
+    {"totalUsageEventsCount":7,"usageEventsDisplay":[
+      {"timestamp":"1785658176745","model":"composer-2.5-fast","chargedCents":96.867,"isHeadless":false}]}
+    """
+
+    /// Cursor serves its dashboard HTML shell for routes that no longer exist.
+    static let htmlShell = "<!DOCTYPE html><html lang=\"en\"><head><title>Cursor</title></head></html>"
+}
+
+// MARK: - Tests
+
+final class CursorAPITests: XCTestCase {
+    private var transport: StubTransport!
+    private var credentials: StubCredentials!
+    private var api: CursorAPI!
+    private let now = Date(timeIntervalSince1970: 1_785_658_392)
+
+    override func setUp() {
+        super.setUp()
+        transport = StubTransport()
+        credentials = StubCredentials()
+        api = CursorAPI(
+            credentials: credentials,
+            transport: transport,
+            calendar: {
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = TimeZone(identifier: "UTC")!
+                return calendar
+            }(),
+            clock: { self.now }
+        )
+    }
+
+    private func routeHappyPath() {
+        transport.routes = [
+            "/api/auth/me": (Fixture.authMe, 200),
+            "/api/dashboard/teams": (Fixture.teams, 200),
+            "/api/dashboard/get-aggregated-usage-events": (Fixture.aggregated, 200),
+            "/api/dashboard/get-filtered-usage-events": (Fixture.events, 200),
+        ]
+    }
+
+    // MARK: Headers
+
+    func testRequestsCarryCookieAndOriginHeaders() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        _ = try await api.discoverIdentity()
+
+        let request = try XCTUnwrap(transport.requests.first { $0.url?.path == "/api/dashboard/get-team-spend" })
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "WorkosCursorSessionToken=user_ABC%3A%3ATOKEN")
+        // Without Origin, Cursor answers 403 "Invalid origin for state-changing request".
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://cursor.com")
+        XCTAssertEqual(request.httpMethod, "POST")
+    }
+
+    // MARK: Identity discovery
+
+    func testPicksTheTeamThatPublishesASpendLimit() async throws {
+        routeHappyPath()
+        // Both teams answer on the same path; vary by body order using a counter.
+        final class OrderedTransport: Transport, @unchecked Sendable {
+            var spendBodies: [String] = []
+            var other: [String: (String, Int)] = [:]
+            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+                let path = request.url?.path ?? ""
+                let body: String
+                if path == "/api/dashboard/get-team-spend" {
+                    body = spendBodies.isEmpty ? "{}" : spendBodies.removeFirst()
+                } else {
+                    body = other[path]?.0 ?? "{}"
+                }
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data(body.utf8), response)
+            }
+        }
+        let ordered = OrderedTransport()
+        ordered.other = transport.routes
+        // bugbot is listed first and has no limit; tech-digital must still win.
+        ordered.spendBodies = [Fixture.spendWithoutLimit, Fixture.spendWithLimit]
+
+        let api = CursorAPI(credentials: credentials, transport: ordered, clock: { self.now })
+        let identity = try await api.discoverIdentity()
+
+        XCTAssertEqual(identity.teamID, 27362705)
+        XCTAssertEqual(identity.teamName, "tech-digital")
+        XCTAssertEqual(identity.numericUserID, 307093031)
+    }
+
+    func testIdentityIsCachedAcrossCalls() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+
+        _ = try await api.discoverIdentity()
+        let afterFirst = transport.requests.count
+        _ = try await api.discoverIdentity()
+
+        XCTAssertEqual(transport.requests.count, afterFirst, "second call should not hit the network")
+    }
+
+    func testForgetIdentityForcesRediscovery() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+
+        _ = try await api.discoverIdentity()
+        let afterFirst = transport.requests.count
+        api.forgetIdentity()
+        _ = try await api.discoverIdentity()
+
+        XCTAssertGreaterThan(transport.requests.count, afterFirst)
+    }
+
+    func testNoMatchingTeamMembershipThrows() async {
+        transport.routes = [
+            "/api/auth/me": ("{\"id\":999,\"sub\":\"user_ABC\"}", 200),
+            "/api/dashboard/teams": (Fixture.teams, 200),
+            "/api/dashboard/get-team-spend": (Fixture.spendWithLimit, 200),
+        ]
+        await XCTAssertThrowsErrorAsync(try await api.discoverIdentity()) { error in
+            guard case .noTeamFound? = error as? APIError else {
+                return XCTFail("expected .noTeamFound, got \(error)")
+            }
+        }
+    }
+
+    // MARK: Snapshot
+
+    func testSnapshotCombinesSpendLimitAndUsage() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+
+        let snapshot = try await api.fetchSnapshot()
+
+        XCTAssertEqual(snapshot.settledSpendCents, 251, accuracy: 0.001)
+        XCTAssertEqual(snapshot.liveSpendCents, 308.809726, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.limitDollars ?? -1, 200, accuracy: 0.001)
+        XCTAssertEqual(snapshot.cycleStart, Date(timeIntervalSince1970: 1_785_542_400))
+        XCTAssertEqual(snapshot.cycleEnd, Date(timeIntervalSince1970: 1_788_220_800))
+        XCTAssertEqual(snapshot.models.first?.model, "composer-2.5-fast")
+        XCTAssertEqual(snapshot.models.first?.inputTokens, 319_174)
+        XCTAssertEqual(snapshot.models.first?.cacheReadTokens, 3_732_298)
+        XCTAssertEqual(snapshot.lastActivity, Date(timeIntervalSince1970: 1_785_658_176.745))
+    }
+
+    func testDateRangesAreSentAsMillisecondStrings() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        _ = try await api.fetchSnapshot()
+
+        let aggregation = try XCTUnwrap(
+            transport.requests.first { $0.url?.path == "/api/dashboard/get-aggregated-usage-events" }
+        )
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(aggregation.httpBody)) as? [String: Any]
+        )
+        // Sent as strings — the API rejects some numeric forms.
+        XCTAssertTrue(body["startDate"] is String)
+        XCTAssertTrue(body["endDate"] is String)
+        let start = try XCTUnwrap(body["startDate"] as? String)
+        let end = try XCTUnwrap(body["endDate"] as? String)
+        XCTAssertLessThan(Int(start)!, Int(end)!, "endDate must be after startDate or the API 400s")
+    }
+
+    func testMissingOwnEntryInSpendListIsReported() async {
+        transport.routes = [
+            "/api/auth/me": (Fixture.authMe, 200),
+            "/api/dashboard/teams": (Fixture.teams, 200),
+            "/api/dashboard/get-aggregated-usage-events": (Fixture.aggregated, 200),
+            "/api/dashboard/get-filtered-usage-events": (Fixture.events, 200),
+        ]
+        // Discovery succeeds, then the spend list comes back without us in it.
+        var callCount = 0
+        final class DisappearingTransport: Transport, @unchecked Sendable {
+            let base: StubTransport
+            private let lock = NSLock()
+            private var callCount = 0
+            init(base: StubTransport) { self.base = base }
+            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+                if request.url?.path == "/api/dashboard/get-team-spend" {
+                    lock.lock()
+                    callCount += 1
+                    let isFirst = callCount == 1
+                    lock.unlock()
+                    let body = isFirst ? Fixture.spendWithLimit : Fixture.spendWithoutLimitForOtherUser
+                    let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                    return (Data(body.utf8), response)
+                }
+                return try await base.send(request)
+            }
+        }
+        _ = callCount
+        let disappearing = DisappearingTransport(base: transport)
+        let api = CursorAPI(credentials: credentials, transport: disappearing, clock: { self.now })
+
+        await XCTAssertThrowsErrorAsync(try await api.fetchSnapshot()) { error in
+            guard case .shapeChanged? = error as? APIError else {
+                return XCTFail("expected .shapeChanged, got \(error)")
+            }
+        }
+    }
+
+    // MARK: Failure handling
+
+    func testHTMLResponseIsReportedAsChangedShapeNotParsed() async {
+        transport.routes = [
+            "/api/auth/me": (Fixture.htmlShell, 200),
+        ]
+        await XCTAssertThrowsErrorAsync(try await api.discoverIdentity()) { error in
+            guard case .notJSON? = error as? APIError else {
+                return XCTFail("expected .notJSON, got \(error)")
+            }
+        }
+    }
+
+    func testUnauthorizedInvalidatesCachedCredentials() async {
+        transport.routes = ["/api/auth/me": ("{\"error\":\"nope\"}", 401)]
+        await XCTAssertThrowsErrorAsync(try await api.discoverIdentity()) { error in
+            XCTAssertTrue((error as? APIError)?.isRecoverableByReauth == true)
+        }
+        XCTAssertEqual(credentials.invalidateCount, 1)
+    }
+
+    func testForbiddenIsAlsoTreatedAsAuthFailure() async {
+        // Cursor returns 403 for a missing Origin header as well as a dead session.
+        transport.routes = ["/api/auth/me": ("{\"error\":\"Invalid origin\"}", 403)]
+        await XCTAssertThrowsErrorAsync(try await api.discoverIdentity()) { error in
+            guard case .unauthorized? = error as? APIError else {
+                return XCTFail("expected .unauthorized, got \(error)")
+            }
+        }
+    }
+
+    func testServerErrorSurfacesStatusCode() async {
+        transport.routes = ["/api/auth/me": ("{}", 500)]
+        await XCTAssertThrowsErrorAsync(try await api.discoverIdentity()) { error in
+            guard case .http(let status, _)? = error as? APIError else {
+                return XCTFail("expected .http, got \(error)")
+            }
+            XCTAssertEqual(status, 500)
+        }
+    }
+
+    func testTokenFailurePropagates() async {
+        credentials.error = .notSignedIn
+        await XCTAssertThrowsErrorAsync(try await api.discoverIdentity()) { error in
+            XCTAssertEqual(error as? TokenError, .notSignedIn)
+        }
+    }
+
+    // MARK: Decoding tolerance
+
+    func testAcceptsNumbersWhetherStringOrNumeric() throws {
+        let asString = try JSONDecoder().decode(LooseNumber.self, from: Data("\"1785542400000\"".utf8))
+        let asNumber = try JSONDecoder().decode(LooseNumber.self, from: Data("1785542400000".utf8))
+        XCTAssertEqual(asString.value, asNumber.value)
+    }
+
+    func testUnparseableNumberIsRejected() {
+        XCTAssertThrowsError(try JSONDecoder().decode(LooseNumber.self, from: Data("\"abc\"".utf8)))
+    }
+
+    func testColleagueIdentityIsNotDecoded() throws {
+        // The payload carries names and emails for all 105 members. Nothing in our model
+        // captures them, so they're dropped at the decode boundary.
+        let decoded = try JSONDecoder().decode(TeamSpendResponse.self, from: Data(Fixture.spendWithLimit.utf8))
+        let mirror = Mirror(reflecting: decoded.teamMemberSpend[0])
+        let fields = mirror.children.compactMap(\.label).sorted()
+        XCTAssertEqual(fields, ["effectivePerUserLimitDollars", "monthlyLimitDollars", "overallSpendCents", "userId"])
+    }
+}
+
+private extension Fixture {
+    /// A spend list that omits our own user id entirely.
+    static let spendWithoutLimitForOtherUser = """
+    {"teamMemberSpend":[{"userId":555,"overallSpendCents":10}],
+     "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000"}
+    """
+}
+
+// MARK: - Async throwing helper
+
+func XCTAssertThrowsErrorAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ handler: (Error) -> Void = { _ in }
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("expected an error to be thrown", file: file, line: line)
+    } catch {
+        handler(error)
+    }
+}
