@@ -9,10 +9,12 @@ final class Preferences {
         case money, percent, iconOnly
 
         var id: String { rawValue }
+        /// No worked example in the label — a baked-in figure goes stale the moment
+        /// spend moves and reads like a bug.
         var label: String {
             switch self {
-            case .money: return "Amount ($3.09)"
-            case .percent: return "Percent of limit (1.5%)"
+            case .money: return "Amount spent"
+            case .percent: return "Percent of limit"
             case .iconOnly: return "Ring only"
             }
         }

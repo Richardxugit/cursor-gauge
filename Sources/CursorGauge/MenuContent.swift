@@ -6,6 +6,10 @@ struct MenuContent: View {
     @Bindable var store: UsageStore
     @Bindable var preferences: Preferences
 
+    /// The `showSettingsWindow:` selector that used to work is a no-op here; this is
+    /// the supported route on macOS 14+.
+    @Environment(\.openSettings) private var openSettingsWindow
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -152,13 +156,13 @@ struct MenuContent: View {
 
     private var actions: some View {
         VStack(spacing: 2) {
-            MenuButton(title: "Refresh Now", shortcut: "⌘R", disabled: store.isRefreshing) {
+            MenuButton(title: "Refresh Now", key: "r", disabled: store.isRefreshing) {
                 Task { await store.refresh() }
             }
-            MenuButton(title: "Settings…", shortcut: "⌘,") {
+            MenuButton(title: "Settings…", key: ",") {
                 openSettings()
             }
-            MenuButton(title: "Quit CursorGauge", shortcut: "⌘Q") {
+            MenuButton(title: "Quit CursorGauge", key: "q") {
                 NSApplication.shared.terminate(nil)
             }
         }
@@ -187,10 +191,23 @@ struct MenuContent: View {
     }
 
     private func openSettings() {
+        // A menu-bar-only app is an accessory, so it has to activate itself or the
+        // settings window opens behind whatever is in front.
         NSApp.activate(ignoringOtherApps: true)
-        // Renamed in macOS 13; try the current selector first and fall back for safety.
-        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        openSettingsWindow()
+    }
+}
+
+/// `keyboardShortcut` has no optional overload, so applying it conditionally needs a
+/// modifier wrapper rather than an `if` inside the view body.
+private struct OptionalShortcut: ViewModifier {
+    let key: KeyEquivalent?
+
+    func body(content: Content) -> some View {
+        if let key {
+            content.keyboardShortcut(key, modifiers: .command)
+        } else {
+            content
         }
     }
 }
@@ -199,19 +216,25 @@ struct MenuContent: View {
 /// which otherwise gives plain SwiftUI buttons with no hover feedback.
 private struct MenuButton: View {
     let title: String
-    var shortcut: String? = nil
+    /// The command-key equivalent. The displayed shortcut is derived from this, so the
+    /// label can't drift out of sync with what the key actually does.
+    var key: KeyEquivalent? = nil
     var disabled: Bool = false
     let action: () -> Void
 
     @State private var isHovering = false
+
+    private var shortcutLabel: String? {
+        key.map { "⌘\($0.character.uppercased())" }
+    }
 
     var body: some View {
         Button(action: action) {
             HStack {
                 Text(title)
                 Spacer()
-                if let shortcut {
-                    Text(shortcut).foregroundStyle(.tertiary)
+                if let shortcutLabel {
+                    Text(shortcutLabel).foregroundStyle(.tertiary)
                 }
             }
             .font(.system(size: 13))
@@ -228,5 +251,6 @@ private struct MenuButton: View {
         .disabled(disabled)
         .opacity(disabled ? 0.5 : 1)
         .onHover { isHovering = $0 }
+        .modifier(OptionalShortcut(key: key))
     }
 }
