@@ -15,7 +15,7 @@ final class Preferences {
             switch self {
             case .money: return "Amount spent"
             case .percent: return "Percent of limit"
-            case .iconOnly: return "Ring only"
+            case .iconOnly: return "Icon only"
             }
         }
     }

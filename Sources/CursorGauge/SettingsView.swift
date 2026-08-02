@@ -31,7 +31,7 @@ struct SettingsView: View {
                     )
                 }
                 Toggle("Warn when spending outpaces the calendar", isOn: $preferences.paceModeEnabled)
-                Text("On a large limit the ring barely moves, so pace is usually the first useful signal.")
+                Text("On a large limit the gauge barely moves, so pace is usually the first useful signal.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -3,7 +3,7 @@ import Foundation
 
 /// `CursorGauge --emit-iconset <dir>` renders the Finder/Settings icon.
 ///
-/// Generating it from code keeps the app icon and the menu bar ring visually identical,
+/// Generating it from code keeps the app icon and the menu bar gauge visually identical,
 /// and avoids checking a binary asset into the repo.
 enum IconGenerator {
     static func run(directory: String) -> Never {
@@ -53,22 +53,36 @@ enum IconGenerator {
             ending: NSColor(calibratedRed: 0.09, green: 0.09, blue: 0.12, alpha: 1)
         )?.draw(in: plate, angle: -90)
 
-        let lineWidth = dimension * 0.085
-        let radius = (dimension * 0.84 - lineWidth) / 2 - inset
-        let center = NSPoint(x: rect.midX, y: rect.midY)
+        // Same flat-top hexagon vessel as the menu bar item, so the two read as one mark.
+        let lineWidth = dimension * 0.055
+        let radius = dimension * 0.30
+        let centre = NSPoint(x: rect.midX, y: rect.midY)
+        let halfHeight = radius * CGFloat(sin(60 * Double.pi / 180))
 
-        let track = NSBezierPath()
-        track.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
-        track.lineWidth = lineWidth
-        NSColor.white.withAlphaComponent(0.18).setStroke()
-        track.stroke()
+        func hexagon(radius: CGFloat) -> NSBezierPath {
+            let path = NSBezierPath()
+            for index in 0..<6 {
+                let angle = Double(index) * 60 * .pi / 180
+                let point = NSPoint(x: centre.x + cos(angle) * radius, y: centre.y + sin(angle) * radius)
+                index == 0 ? path.move(to: point) : path.line(to: point)
+            }
+            path.close()
+            return path
+        }
 
-        let arc = NSBezierPath()
-        arc.appendArc(withCenter: center, radius: radius, startAngle: 90, endAngle: 90 - 360 * 0.68, clockwise: true)
-        arc.lineWidth = lineWidth
-        arc.lineCapStyle = .round
-        NSColor(calibratedRed: 0.36, green: 0.71, blue: 1.0, alpha: 1).setStroke()
-        arc.stroke()
+        NSGraphicsContext.current?.saveGraphicsState()
+        hexagon(radius: radius - lineWidth * 1.4).addClip()
+        NSColor(calibratedRed: 0.36, green: 0.71, blue: 1.0, alpha: 1).setFill()
+        NSRect(
+            x: rect.minX, y: centre.y - halfHeight,
+            width: dimension, height: halfHeight * 2 * 0.62
+        ).fill()
+        NSGraphicsContext.current?.restoreGraphicsState()
+
+        let outline = hexagon(radius: radius)
+        outline.lineWidth = lineWidth
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        outline.stroke()
 
         NSGraphicsContext.restoreGraphicsState()
 

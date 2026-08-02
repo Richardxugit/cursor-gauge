@@ -24,7 +24,7 @@ enum PreviewRenderer {
             ("stale", 0.25, .normal, "$50.00", true),
             ("no limit", nil, .normal, "$50.00", false),
             ("percent mode", 0.0166, .normal, "1.7%", false),
-            ("ring only", 0.45, .normal, nil, false),
+            ("icon only", 0.45, .normal, nil, false),
         ]
 
         let size = NSSize(width: width * 2, height: rowHeight * CGFloat(samples.count))

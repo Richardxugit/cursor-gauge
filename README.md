@@ -1,11 +1,17 @@
 # CursorGauge
 
-A macOS menu bar indicator for your Cursor spend. Shows a ring filling toward your
-monthly limit, with burn rate and end-of-cycle projection behind a click.
+A macOS menu bar indicator for your Cursor spend. A hexagon that fills from the base as
+you approach your monthly limit, with burn rate and end-of-cycle projection behind a
+click.
 
 ```
-  ◔  $3.31                    ← menu bar
+  ⬡  $3.58                    ← menu bar
 ```
+
+The shape is a flat-top hexagon rather than a progress ring for a specific reason: on a
+$200 limit a normal month sits near 2%, and a thin ring at 2% is an empty circle with
+nothing to read. A filled silhouette keeps its presence when nearly empty, and a flat
+base means a low fill renders as a sliver rather than tapering into a stray triangle.
 
 ## Why this exists
 
@@ -47,17 +53,17 @@ Built locally, that isn't needed.
 
 | | |
 |---|---|
-| **Ring + amount** | Spend this billing cycle against your limit |
+| **Gauge + amount** | Spend this billing cycle against your limit |
 | **Today** | Spend since midnight, live |
 | **Projected** | Extrapolated end-of-cycle total (hidden for the first day — too noisy) |
 | **Burn rate** | Dollars per day so far this cycle |
 | **Models** | Per-model cost and token split, top 3 |
 | **Last request** | When Cursor last charged something |
 
-The ring stays monochrome while healthy and only takes colour when it means something:
+The gauge stays monochrome while healthy and only takes colour when it means something:
 amber past 60%, red past 85%, both configurable.
 
-**Pace warning.** On a $200 limit a normal month barely moves the ring, so absolute
+**Pace warning.** On a $200 limit a normal month barely moves the gauge, so absolute
 percentage is a weak signal. Pace mode goes amber when spending outruns the calendar —
 40% of budget on day 10 of 31 — regardless of how low the percentage is. The thin
 vertical marker on the progress bar is where the calendar says you should be.
@@ -104,6 +110,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 swift test                                   # 52 tests, no network
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
+swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
 ./build.sh                                   # universal .app in ./build
 ```
 

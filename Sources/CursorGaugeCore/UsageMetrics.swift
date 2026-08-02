@@ -8,7 +8,7 @@ public struct GaugeThresholds: Equatable {
     public var warning: Double
     public var critical: Double
     /// Tint on pace even when the absolute percentage is low. On a $200 limit a healthy
-    /// month barely moves the ring, so pace is the signal that actually fires.
+    /// month barely moves the gauge, so pace is the signal that actually fires.
     public var paceModeEnabled: Bool
     /// How far ahead of the calendar spending may run before pace trips. 1.25 = 25% over.
     public var paceTolerance: Double

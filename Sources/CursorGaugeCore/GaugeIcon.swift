@@ -1,6 +1,6 @@
 import AppKit
 
-/// Draws the menu bar ring.
+/// Draws the menu bar gauge: a flat-top hexagon that fills from the base.
 ///
 /// While healthy the image is a *template*, so macOS tints it for light/dark mode,
 /// menu bar transparency and Reduce Transparency automatically. It only opts out of
@@ -8,6 +8,20 @@ import AppKit
 /// bar should mean something.
 public enum GaugeIcon {
     public static let defaultSize: CGFloat = 18
+
+    /// Flat-top hexagon — vertices at 0°, 60°, … put flat edges at top and bottom, so a
+    /// bottom-up fill sits on a flat base. A pointy-bottom hexagon tapers to a vertex
+    /// and low fills read as a stray triangle.
+    static func hexagon(centre: NSPoint, radius: CGFloat) -> NSBezierPath {
+        let path = NSBezierPath()
+        for index in 0..<6 {
+            let angle = Double(index) * 60 * .pi / 180
+            let point = NSPoint(x: centre.x + cos(angle) * radius, y: centre.y + sin(angle) * radius)
+            index == 0 ? path.move(to: point) : path.line(to: point)
+        }
+        path.close()
+        return path
+    }
 
     public static func image(
         fraction: Double?,
@@ -23,42 +37,39 @@ public enum GaugeIcon {
         }
 
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            let lineWidth: CGFloat = 2
-            let radius = (min(rect.width, rect.height) - lineWidth) / 2 - 0.5
-            let center = NSPoint(x: rect.midX, y: rect.midY)
+            let centre = NSPoint(x: rect.midX, y: rect.midY)
+            let radius = rect.width / 2 - 1
+            // A flat-top hexagon spans less vertically than horizontally.
+            let halfHeight = radius * CGFloat(sin(60 * Double.pi / 180))
+            let outline = hexagon(centre: centre, radius: radius)
 
-            let track = NSBezierPath()
-            track.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
-            track.lineWidth = lineWidth
-            tint.withAlphaComponent(0.25).setStroke()
-            track.stroke()
-
-            guard let fraction else {
-                // No published limit: show a centre dot so the icon still reads as live
-                // rather than as an empty, broken ring.
-                let dot = NSBezierPath(ovalIn: NSRect(
-                    x: center.x - lineWidth, y: center.y - lineWidth,
-                    width: lineWidth * 2, height: lineWidth * 2
-                ))
+            if let fraction {
+                let level = min(max(fraction, 0), 1)
+                if level > 0 {
+                    NSGraphicsContext.current?.saveGraphicsState()
+                    hexagon(centre: centre, radius: radius - 1.9).addClip()
+                    // Guarantee a visible sliver: any spend at all should show, and on a
+                    // large limit a true-to-scale fill would round away to nothing.
+                    let height = max(halfHeight * 2 * level, 1.8)
+                    tint.setFill()
+                    NSRect(
+                        x: rect.minX, y: centre.y - halfHeight,
+                        width: rect.width, height: height
+                    ).fill()
+                    NSGraphicsContext.current?.restoreGraphicsState()
+                }
+            } else {
+                // No published limit: a centre dot keeps the icon reading as live rather
+                // than as an empty, broken shape.
                 tint.setFill()
-                dot.fill()
-                return true
+                NSBezierPath(ovalIn: NSRect(
+                    x: centre.x - 1.6, y: centre.y - 1.6, width: 3.2, height: 3.2
+                )).fill()
             }
 
-            let swept = min(max(fraction, 0), 1)
-            guard swept > 0 else { return true }
-
-            // Start at 12 o'clock and fill clockwise, the way a dial reads.
-            let progress = NSBezierPath()
-            progress.appendArc(
-                withCenter: center, radius: radius,
-                startAngle: 90, endAngle: 90 - 360 * swept,
-                clockwise: true
-            )
-            progress.lineWidth = lineWidth
-            progress.lineCapStyle = .round
-            tint.setStroke()
-            progress.stroke()
+            outline.lineWidth = 1.6
+            tint.withAlphaComponent(0.9).setStroke()
+            outline.stroke()
             return true
         }
 
@@ -67,7 +78,7 @@ public enum GaugeIcon {
         return image
     }
 
-    /// Ring plus optional trailing text, composited into a single image.
+    /// Gauge plus optional trailing text, composited into a single image.
     ///
     /// SwiftUI's `MenuBarExtra` label renders an image and a text view inconsistently
     /// when both are present, so the whole thing is drawn once here instead. It also
@@ -80,10 +91,10 @@ public enum GaugeIcon {
         dimmed: Bool = false,
         size: CGFloat = defaultSize
     ) -> NSImage {
-        let ring = image(fraction: fraction, level: level, size: size)
+        let gauge = image(fraction: fraction, level: level, size: size)
         guard let text, !text.isEmpty else {
-            if dimmed { return dim(ring) }
-            return ring
+            if dimmed { return dim(gauge) }
+            return gauge
         }
 
         let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -101,7 +112,7 @@ public enum GaugeIcon {
         let total = NSSize(width: size + gap + ceil(textSize.width), height: size)
 
         let composite = NSImage(size: total, flipped: false) { _ in
-            ring.draw(
+            gauge.draw(
                 in: NSRect(x: 0, y: 0, width: size, height: size),
                 from: .zero, operation: .sourceOver, fraction: 1
             )
@@ -124,7 +135,7 @@ public enum GaugeIcon {
         return faded
     }
 
-    /// Shown when there's no reading at all — a stale ring would imply data we don't have.
+    /// Shown when there's no reading at all — a stale gauge would imply data we don't have.
     public static func problemImage(size: CGFloat = defaultSize) -> NSImage {
         let symbol = NSImage(
             systemSymbolName: "exclamationmark.triangle",
