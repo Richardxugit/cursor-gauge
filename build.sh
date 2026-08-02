@@ -21,6 +21,9 @@ BINARY=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/$APP
 echo "==> Assembling bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# Keep Spotlight out of the staging directory, or the build copy shows up in
+# Launchpad and search alongside the installed one as a confusing duplicate.
+touch "$BUILD_DIR/.metadata_never_index"
 cp "$BINARY" "$APP/Contents/MacOS/$APP_NAME"
 
 echo "==> Rendering app icon"
@@ -71,7 +74,10 @@ if [[ "${1:-}" == "--install" ]]; then
     fi
     rm -rf "$TARGET"
     cp -R "$APP" "$TARGET"
-    echo "    installed"
+    # Remove the staging copy once it's installed, so only one CursorGauge.app
+    # exists on the machine.
+    rm -rf "$APP"
+    echo "    installed (staging copy removed)"
 fi
 
 echo "==> Done: $APP"
