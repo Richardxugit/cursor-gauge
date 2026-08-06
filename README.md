@@ -1,17 +1,21 @@
 # CursorGauge
 
-A macOS menu bar indicator for your Cursor spend. A hexagon that fills from the base as
+A macOS menu bar indicator for your Cursor spend. A hexagon that fills like a pie chart as
 you approach your monthly limit, with an end-of-cycle estimate and a per-chat cost
 breakdown behind a click.
 
 ```
-  ⬡  $26.63                   ← menu bar
+  ⬡  $30.32                   ← menu bar
 ```
 
-The shape is a flat-top hexagon rather than a progress ring for a specific reason: on a
-$200 limit a normal month sits near 2%, and a thin ring at 2% is an empty circle with
-nothing to read. A filled silhouette keeps its presence when nearly empty, and a flat
-base means a low fill renders as a sliver rather than tapering into a stray triangle.
+The wedge starts at twelve o'clock and sweeps clockwise, so the filled area *is* the
+percentage: a quarter spent fills a quarter of the shape, a full limit fills it solid.
+
+Two deliberate choices. It is a filled hexagon rather than a thin progress ring because on
+a $200 limit a normal month sits near 2%, and a 2% ring is an empty circle with nothing to
+read — a solid silhouette keeps its presence. And a true-to-scale 1% slice is a hairline
+that vanishes at 18pt, so any spend at all draws at least a 14° wedge: "a little" must
+never look like "none".
 
 ## Why this exists
 

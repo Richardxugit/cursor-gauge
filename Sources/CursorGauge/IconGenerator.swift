@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CursorGaugeCore
 
 /// `CursorGauge --emit-iconset <dir>` renders the Finder/Settings icon.
 ///
@@ -53,30 +54,20 @@ enum IconGenerator {
             ending: NSColor(calibratedRed: 0.09, green: 0.09, blue: 0.12, alpha: 1)
         )?.draw(in: plate, angle: -90)
 
-        // Same flat-top hexagon vessel as the menu bar item, so the two read as one mark.
+        // Same flat-top hexagon and same pie fill as the menu bar item, so the two read
+        // as one mark.
         let lineWidth = dimension * 0.055
         let radius = dimension * 0.30
         let centre = NSPoint(x: rect.midX, y: rect.midY)
-        let halfHeight = radius * CGFloat(sin(60 * Double.pi / 180))
 
         func hexagon(radius: CGFloat) -> NSBezierPath {
-            let path = NSBezierPath()
-            for index in 0..<6 {
-                let angle = Double(index) * 60 * .pi / 180
-                let point = NSPoint(x: centre.x + cos(angle) * radius, y: centre.y + sin(angle) * radius)
-                index == 0 ? path.move(to: point) : path.line(to: point)
-            }
-            path.close()
-            return path
+            GaugeIcon.hexagon(centre: centre, radius: radius)
         }
 
         NSGraphicsContext.current?.saveGraphicsState()
         hexagon(radius: radius - lineWidth * 1.4).addClip()
         NSColor(calibratedRed: 0.36, green: 0.71, blue: 1.0, alpha: 1).setFill()
-        NSRect(
-            x: rect.minX, y: centre.y - halfHeight,
-            width: dimension, height: halfHeight * 2 * 0.62
-        ).fill()
+        GaugeIcon.wedge(centre: centre, radius: radius, fraction: 0.62).fill()
         NSGraphicsContext.current?.restoreGraphicsState()
 
         let outline = hexagon(radius: radius)

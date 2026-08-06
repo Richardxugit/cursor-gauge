@@ -1,6 +1,10 @@
 import AppKit
 
-/// Draws the menu bar gauge: a flat-top hexagon that fills from the base.
+/// Draws the menu bar gauge: a flat-top hexagon filled like a pie chart.
+///
+/// The wedge starts at twelve o'clock and sweeps clockwise, so the filled area *is* the
+/// percentage — a quarter spent is a quarter of the shape, and a full limit is a solid
+/// hexagon. Clipping the wedge to the hexagon keeps the outline as the vessel.
 ///
 /// While healthy the image is a *template*, so macOS tints it for light/dark mode,
 /// menu bar transparency and Reduce Transparency automatically. It only opts out of
@@ -9,16 +13,37 @@ import AppKit
 public enum GaugeIcon {
     public static let defaultSize: CGFloat = 18
 
-    /// Flat-top hexagon — vertices at 0°, 60°, … put flat edges at top and bottom, so a
-    /// bottom-up fill sits on a flat base. A pointy-bottom hexagon tapers to a vertex
-    /// and low fills read as a stray triangle.
-    static func hexagon(centre: NSPoint, radius: CGFloat) -> NSBezierPath {
+    /// The smallest wedge we will draw. A true-to-scale 1% slice is a hairline that
+    /// disappears at menu bar size, and "some spend" must never look like "none".
+    private static let minimumSweep: Double = 14
+
+    /// Flat-top hexagon — vertices at 0°, 60°, … put flat edges at top and bottom, which
+    /// gives the mark a level base to sit on rather than balancing on a point.
+    public static func hexagon(centre: NSPoint, radius: CGFloat) -> NSBezierPath {
         let path = NSBezierPath()
         for index in 0..<6 {
             let angle = Double(index) * 60 * .pi / 180
             let point = NSPoint(x: centre.x + cos(angle) * radius, y: centre.y + sin(angle) * radius)
             index == 0 ? path.move(to: point) : path.line(to: point)
         }
+        path.close()
+        return path
+    }
+
+    /// A pie slice from twelve o'clock, clockwise.
+    ///
+    /// The radius is deliberately overshot: the wedge is clipped to the hexagon, so it
+    /// must reach past the corners or the fill would stop short of them at the diagonals.
+    public static func wedge(centre: NSPoint, radius: CGFloat, fraction: Double) -> NSBezierPath {
+        let sweep = max(min(max(fraction, 0), 1) * 360, minimumSweep)
+        let path = NSBezierPath()
+        path.move(to: centre)
+        // AppKit measures anticlockwise from three o'clock; start at the top and go the
+        // other way, which is how a progress dial is read.
+        path.appendArc(
+            withCenter: centre, radius: radius * 1.5,
+            startAngle: 90, endAngle: 90 - sweep, clockwise: true
+        )
         path.close()
         return path
     }
@@ -39,8 +64,6 @@ public enum GaugeIcon {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let centre = NSPoint(x: rect.midX, y: rect.midY)
             let radius = rect.width / 2 - 1
-            // A flat-top hexagon spans less vertically than horizontally.
-            let halfHeight = radius * CGFloat(sin(60 * Double.pi / 180))
             let outline = hexagon(centre: centre, radius: radius)
 
             if let fraction {
@@ -48,14 +71,13 @@ public enum GaugeIcon {
                 if level > 0 {
                     NSGraphicsContext.current?.saveGraphicsState()
                     hexagon(centre: centre, radius: radius - 1.9).addClip()
-                    // Guarantee a visible sliver: any spend at all should show, and on a
-                    // large limit a true-to-scale fill would round away to nothing.
-                    let height = max(halfHeight * 2 * level, 1.8)
                     tint.setFill()
-                    NSRect(
-                        x: rect.minX, y: centre.y - halfHeight,
-                        width: rect.width, height: height
-                    ).fill()
+                    if level >= 1 {
+                        // Avoid a hairline seam where a 360° wedge meets itself.
+                        rect.fill()
+                    } else {
+                        wedge(centre: centre, radius: radius, fraction: level).fill()
+                    }
                     NSGraphicsContext.current?.restoreGraphicsState()
                 }
             } else {

@@ -216,7 +216,6 @@ struct MenuContent: View {
                 ForEach(models) { spend in
                     HStack {
                         Text(spend.model)
-                            .foregroundStyle(Color.accentColor)
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 8)
