@@ -90,6 +90,11 @@ the parent chat spent on its own requests. Above, the fifteen subagents come to 
 against a $16.76 parent, and the $3.13 gap is exactly the `default` line in its model
 split.
 
+The last row is a remainder, computed by subtracting the rounded rows above it from the
+cycle total — so the column you read always adds up, whatever the cut point. Chats with no
+local record (created on another Mac, or aged out of Cursor's store) cannot be named and
+appear as a single `Unnamed sessions (N)` line rather than N anonymous rows.
+
 ### Models
 
 Two views of the same money, because they answer different questions. The split inside a
@@ -112,10 +117,7 @@ per request and never reports which model actually ran. On this account Auto han
 requests for $9.73 while 5 hand-picked Sonnet-thinking requests cost $9.39: the difference
 is `cursorTokenFee`, charged on the premium model and zero on the rest.
 
-The last row is a remainder, computed by subtracting the rounded rows above it from the
-cycle total — so the column you read always adds up, whatever the cut point. Chats with no
-local record (created on another Mac, or aged out of Cursor's store) cannot be named and
-appear as a single `Unnamed sessions (N)` line rather than N anonymous rows.
+### Colour
 
 The gauge stays monochrome while healthy and only takes colour when it means something:
 amber past 60%, red past 85%, both configurable.
@@ -168,7 +170,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 89 tests, no network and no database
+swift test                                   # 92 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
