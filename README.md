@@ -90,11 +90,27 @@ the parent chat spent on its own requests. Above, the fifteen subagents come to 
 against a $16.76 parent, and the $3.13 gap is exactly the `default` line in its model
 split.
 
-There is no separate models section. It answered the same question one level less
-usefully — a global "you spent $9.39 on Sonnet" doesn't say *which work* burned it. The
-split now sits inside each session and covers the whole job, subagents included. It also
-gets better data: usage events name real models (`claude-sonnet-5-thinking-high`) where
-the aggregate endpoint reports a `modelIntent` (`default`).
+### Models
+
+Two views of the same money, because they answer different questions. The split inside a
+session says which model made *that job* expensive; the `MODELS` section says where the
+month went overall. It sits collapsed on one row until you ask for it:
+
+```
+▾ MODELS                          $26.63
+    default                        $9.73
+    claude-sonnet-5-thinking-high  $9.39
+    composer-2.5-fast              $7.51
+```
+
+Both are ordered by cost and read the usage events, which name real models
+(`claude-sonnet-5-thinking-high`) where the aggregate endpoint reports only a
+`modelIntent` (`default`).
+
+`default` is not a model — it is Cursor's **Auto** setting (`auto-smart`). Cursor picks
+per request and never reports which model actually ran. On this account Auto handled 65
+requests for $9.73 while 5 hand-picked Sonnet-thinking requests cost $9.39: the difference
+is `cursorTokenFee`, charged on the premium model and zero on the rest.
 
 The last row is a remainder, computed by subtracting the rounded rows above it from the
 cycle total — so the column you read always adds up, whatever the cut point. Chats with no

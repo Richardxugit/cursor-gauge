@@ -98,8 +98,13 @@ public struct SessionBreakdown: Equatable {
     /// Roots only — an unattributed event is spend, not a session.
     public let unnamedCount: Int
     public let totalCents: Double
+    /// Spend by model across the whole cycle, by cost. Covers every event, including
+    /// those in sessions that could not be named.
+    public let models: [ModelSpend]
 
-    public static let empty = SessionBreakdown(ranked: [], unnamedCents: 0, unnamedCount: 0, totalCents: 0)
+    public static let empty = SessionBreakdown(
+        ranked: [], unnamedCents: 0, unnamedCount: 0, totalCents: 0, models: []
+    )
 
     /// Cuts the list to `limit` rows and derives the remainder.
     ///
@@ -180,12 +185,23 @@ public struct SessionBreakdown: Equatable {
 
         // Defined by subtraction, so nothing can fall between the categories: it covers
         // un-nameable roots *and* events that carried no conversation id at all.
+        // Straight from the events rather than from the tree, so spend in sessions that
+        // could not be named still appears here.
+        var cycleModels: [String: Double] = [:]
+        for e in events {
+            guard let model = e.model else { continue }
+            cycleModels[model, default: 0] += e.cents
+        }
+
         let namedTotal = ranked.reduce(0) { $0 + $1.rolledCents }
         return SessionBreakdown(
             ranked: ranked,
             unnamedCents: max(total - namedTotal, 0),
             unnamedCount: roots.filter { $0.name == nil }.count,
-            totalCents: total
+            totalCents: total,
+            models: cycleModels
+                .map { ModelSpend(model: $0.key, cents: $0.value) }
+                .sorted { ($0.cents, $1.model) > ($1.cents, $0.model) }
         )
     }
 

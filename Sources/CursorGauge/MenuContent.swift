@@ -16,6 +16,7 @@ struct MenuContent: View {
     /// Sessions whose full subagent list is showing.
     @State private var expandedChildren: Set<String> = []
     @State private var showingAllSessions = false
+    @State private var showingModels = false
 
     /// Five keeps the menu a fixed height on a normal cycle; the rest is one click away.
     private static let sessionRowLimit = 5
@@ -32,10 +33,10 @@ struct MenuContent: View {
                     Divider().padding(.vertical, 8)
                     sessions(snapshot)
                 }
-                // No standalone models section: it answered the same question as the
-                // sessions list ("where did it go") one level less usefully. The split
-                // now sits inside each session, where it says which model made *that*
-                // job expensive.
+                if !snapshot.sessions.models.isEmpty {
+                    Divider().padding(.vertical, 8)
+                    modelTotals(snapshot.sessions.models)
+                }
                 Divider().padding(.vertical, 8)
                 freshness(snapshot)
             }
@@ -185,6 +186,53 @@ struct MenuContent: View {
             }
             if showingAllSessions {
                 disclosure("Show less", value: nil) { showingAllSessions = false }
+            }
+        }
+    }
+
+    /// Cycle-wide spend by model, collapsed to a single row until asked for.
+    ///
+    /// This is the counterpart to the per-session split: that one says which model made
+    /// *this job* expensive, this one says where the month went overall. Collapsed by
+    /// default so it costs one row when you aren't asking.
+    @ViewBuilder
+    private func modelTotals(_ models: [ModelSpend]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Button {
+                showingModels.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: showingModels ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 7, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 8)
+                    Text("MODELS")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .kerning(0.4)
+                    Spacer(minLength: 8)
+                    Text(Format.money(cents: models.reduce(0) { $0 + $1.cents }))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showingModels {
+                ForEach(models) { spend in
+                    HStack {
+                        Text(spend.model)
+                            .foregroundStyle(Color.accentColor)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        Text(Format.money(cents: spend.cents)).monospacedDigit()
+                    }
+                    .font(.system(size: 11))
+                    .padding(.leading, 12)
+                }
             }
         }
     }

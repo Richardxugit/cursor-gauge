@@ -215,6 +215,43 @@ final class SessionRollupTests: XCTestCase {
         XCTAssertEqual(breakdown.ranked[0].models.map(\.model), ["gpt"], "no phantom model row")
     }
 
+    // MARK: - Cycle-wide model list
+
+    func testCollectsModelSpendAcrossEveryEvent() {
+        // Includes spend from sessions that could never be named, which is still real money.
+        let breakdown = SessionBreakdown.build(
+            events: [
+                event("a", 100, model: "sonnet"), event("kid", 50, model: "fast"),
+                event("ghost", 30, model: "sonnet"), event(nil, 20, model: "fast"),
+            ],
+            catalog: ["a": named("Alpha"), "kid": named("Kid", parent: "a")]
+        )
+        XCTAssertEqual(
+            breakdown.models,
+            [ModelSpend(model: "sonnet", cents: 130), ModelSpend(model: "fast", cents: 70)]
+        )
+    }
+
+    func testCycleModelListIsOrderedByCost() {
+        let breakdown = SessionBreakdown.build(
+            events: [
+                event("a", 10, model: "cheap"), event("a", 900, model: "dear"),
+                event("a", 300, model: "middling"),
+            ],
+            catalog: ["a": named("Alpha")]
+        )
+        XCTAssertEqual(breakdown.models.map(\.model), ["dear", "middling", "cheap"])
+    }
+
+    func testCycleModelListOmitsEventsWithNoModel() {
+        let breakdown = SessionBreakdown.build(
+            events: [event("a", 100, model: "sonnet"), event("a", 40, model: nil)],
+            catalog: ["a": named("Alpha")]
+        )
+        XCTAssertEqual(breakdown.models, [ModelSpend(model: "sonnet", cents: 100)])
+        XCTAssertEqual(breakdown.totalCents, 140, accuracy: 0.001, "the total still counts it")
+    }
+
     // MARK: - Subagent truncation
 
     func testShowsOnlyTheTopSubagentsAndCountsTheRest() {
