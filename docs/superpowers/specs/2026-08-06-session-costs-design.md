@@ -84,7 +84,7 @@ root, rolled up — the answer to "what is this sitting costing me".
      Estimated total     $128 by Sep 1
      Burn rate              $4.12 / day
      ────────────────────────────────
-     TOP SESSIONS THIS CYCLE
+     TOP SESSIONS
      ▸ OXP-54 feature discussion $13.64
      ▾ Order tracking e2e test    $1.64
          Debug checkout flow      $0.71
@@ -97,6 +97,10 @@ root, rolled up — the answer to "what is this sitting costing me".
 
 Roots rank by **rolled** total, so cost of the whole piece of work drives the order.
 Children rank by own cost. Expansion state is view-local and resets when the menu closes.
+
+The section is headed `TOP SESSIONS`, not `TOP SESSIONS THIS CYCLE`. The window is still
+cycle-to-date, but every other row already establishes that frame (`of $200`, `by Sep 1`,
+burn rate), so naming it again adds length without adding meaning.
 
 ### Relabel: `Projected` → `Estimated total`
 
