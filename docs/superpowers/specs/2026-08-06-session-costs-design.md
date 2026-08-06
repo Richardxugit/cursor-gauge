@@ -81,7 +81,7 @@ root, rolled up — the answer to "what is this sitting costing me".
      Today                     $13.64
      Session                   $13.64
        OXP-54 feature discussion
-     Projected           $128 by Sep 1
+     Estimated total     $128 by Sep 1
      Burn rate              $4.12 / day
      ────────────────────────────────
      TOP SESSIONS THIS CYCLE
@@ -97,6 +97,17 @@ root, rolled up — the answer to "what is this sitting costing me".
 
 Roots rank by **rolled** total, so cost of the whole piece of work drives the order.
 Children rank by own cost. Expansion state is view-local and resets when the menu closes.
+
+### Relabel: `Projected` → `Estimated total`
+
+Not part of session costs, but found while reviewing this menu and cheap to fix here.
+Peirong read `Projected $128 by Sep 1` as the *remaining* balance. It is the opposite: a
+forecast of the end-of-cycle **total**, already including the $23.51 spent. The word
+"total" removes that reading in a way "projected" and "estimated usage" do not — both can
+still be parsed as a balance.
+
+No separate "Left" row: the headline `$23.51 of $200` already carries the balance, and the
+menu is worth keeping short. Label only; `UsageMetrics.projectedCents` is unchanged.
 
 ### Components
 
