@@ -72,9 +72,8 @@ we will not ship an affordance that looks live and isn't.
 
 ### Menu
 
-Two sections: the session you are in, then everything else ranked by cost. The current
-session is expanded by default — it is the one you want to see inside — and the ranked
-list is collapsed.
+One list, ranked by cost. Top five shown; the rest behind a "show more" row that carries
+its own total, so the cycle always accounts for itself even while collapsed.
 
 ```
   ⬡  $23.51 of $200              12%
@@ -82,76 +81,69 @@ list is collapsed.
      Today                     $13.64
      Estimated total     $128 by Sep 1
      ────────────────────────────────
-   ● ▾ OXP-54 feature discussion  $13.64
-         Implement Task 4 fetch    $2.83
-         Implement Task 6 Single   $1.79
-         Implement Task 7 Mixed    $1.55
-     ────────────────────────────────
      TOP SESSIONS THIS CYCLE
-     ▸ Order tracking e2e test     $3.01
-     ▸ PR review comments          $0.52
+     ▾ OXP-54 feature discussion $13.64
+         Implement Task 4 fetch   $2.83
+         Implement Task 6 Single  $1.79
+         Implement Task 7 Mixed   $1.55
+     ▸ Order tracking e2e test    $3.01
+     ▸ PR review comments         $0.52
      ▸ OXP-30 test case generation $0.17
-     ▸ OXP-81 getOrderView update  $0.12
-       Other sessions              $6.06
+     ▸ OXP-81 getOrderView update $0.12
+       Show 11 more               $6.05
      ────────────────────────────────
      Last request          2 min ago
 ```
 
+Expanded, the remaining roots appear in the same ranking. The nine with no local record
+cannot be listed by name, so they stay aggregated on a final line that says so plainly:
+
+```
+     ▸ Ko PR description          $0.07
+     ▸ DataLayer GA events        $0.05
+       Unnamed sessions (9)       $5.93
+       Show less
+```
+
 Roots rank by **rolled** total, so cost of the whole piece of work drives the order.
-Children rank by own cost. Both sections expand; expansion state is view-local and resets
-when the menu closes.
+Children rank by own cost. Rows are collapsed by default; expansion state is view-local
+and resets when the menu closes. The section scrolls past a fixed maximum height so a
+heavy cycle cannot grow the menu without bound.
 
-The current session is excluded from the ranked list, so it renders exactly once. That is
-why the list below can start at $3.01 while a larger figure sits above it.
+#### No "current session"
 
-`THIS CYCLE` is retained on the second header here, having been dropped from the earlier
-single-section design. With a "now" section directly above it, the qualifier draws a real
-contrast — this session versus the whole month — rather than restating the frame the
-surrounding rows already set.
+Earlier drafts pinned the session in progress, marked, above the ranking. Dropped: this is
+a **cost view**, and a session's recency does not change what it cost. Giving one row
+special status added a marker, a legend, a pinning rule, an exclusion rule, and a
+`current` field to the model — all to answer a question ("what am I spending right now")
+that `Today` already answers better.
 
-#### The current session is pinned, marked `●`
+Removing it also retires the 21%-miss problem that pinning existed to solve, rather than
+solving it.
 
-Ranking by cost alone loses the session you are actually in whenever it is cheap. Measured
-by replaying all 84 events of this cycle and asking, after each one, whether the session
-just used appeared in the list:
+#### The "show more" total is a remainder, and rounds to match
 
-| List length | Current session absent |
-|---|---|
-| top 3 | **42%** of events |
-| top 5 | **21%** of events |
-| top 8 | 7% of events |
+Two different things fall off the visible list: roots with no local record (nine this
+cycle) and named roots below the display cut (two). An earlier draft summed only the
+un-nameable ones and silently lost the rest — its own figures came to $23.39 against a
+$23.51 cycle.
 
-A one-in-five failure to answer "what is this session costing me" is not acceptable for
-what the feature exists to do. So the current root gets its own section above the ranked
-list, always first, marked `●`, and is removed from the ranking below.
-
-This replaces the separate `Session` row of the first draft, which showed the name and
-figure a second time and duplicated the list's top entry roughly 79% of the time. Giving
-the current session the full row — expandable, with its subagents — costs no more space
-than that row did and always says something the list cannot.
-
-#### `Other sessions` is the remainder, defined by subtraction
-
-Nine of this cycle's 16 roots have no local record at all — no `composerHeaders` row, no
-`composerData`, no subtitle (verified, not assumed). They cannot be named by any local
-means, and listing them individually would put "Unnamed session" at positions 3 and 4.
-
-But un-nameable roots are not the only ones that fall off the list: the ranked section is
-capped at four, so named-but-cheap roots drop off too. Defining `Other` as only the
-un-nameable ones silently loses those — an earlier draft of this spec did exactly that and
-its own arithmetic came to $23.39 against a $23.51 cycle.
-
-So `Other sessions` is defined by **subtraction, not by category**:
+So the figure on the `Show N more` row is defined by **subtraction, not by category**:
 
 ```
-other = cycleTotal − current − Σ(listed)
+more = cycleTotal − Σ(listed)
 ```
 
-This reconciles by construction, whatever the list length or how many roots are nameable:
+which reconciles by construction whatever the list length or how many roots are nameable.
+
+It is computed from the **rounded** row values, not the raw ones. Summing raw cents and
+rounding at the end gives $6.06, and the column then reads $23.52 against a $23.51 total —
+correct in memory, visibly wrong on screen. Rounding each listed row first and subtracting
+gives $6.05, and the column adds up as displayed:
 
 ```
-$13.64 + $3.01 + $0.52 + $0.17 + $0.12 + $6.06 = $23.51   ✓
-        other = 9 un-nameable ($5.93) + 2 ranked-out named ($0.13)
+$13.64 + $3.01 + $0.52 + $0.17 + $0.12 + $6.05 = $23.51   ✓
+     more = 9 un-nameable ($5.93) + 2 ranked-out named ($0.12)
 ```
 
 #### Rows removed
@@ -159,7 +151,8 @@ $13.64 + $3.01 + $0.52 + $0.17 + $0.12 + $6.06 = $23.51   ✓
 - **`Burn rate`** — `estimatedTotal = burnRate × cycleLengthDays` exactly
   ($4.12 × 31 = $128), so the two rows carried one fact. `Estimated total` survives
   because it is directly comparable to the $200 limit.
-- **`Session`** — became the pinned `●` row above.
+- **`Session`** — a dedicated row for the session in progress. Removed with the
+  current-session concept above; `Today` covers "what am I spending right now".
 
 Net: two metric rows rather than five, and no figure appears twice.
 
@@ -199,17 +192,17 @@ public struct SessionNode: Equatable, Identifiable {
 }
 
 public struct SessionBreakdown: Equatable {
-    public let current: SessionNode?     // most recent root, pinned and marked
-    public let ranked: [SessionNode]     // named roots by rolled cost, current excluded
-    public let otherCents: Double        // remainder: total − current − ranked
-    public let totalCents: Double        // invariant: current + ranked + other == total
+    public let ranked: [SessionNode]     // named roots by rolled cost, all of them
+    public let unnamedCents: Double      // roots with no local record, summed
+    public let unnamedCount: Int
+    public let totalCents: Double        // invariant: ranked + unnamed == total
 }
 ```
 
-`UsageSnapshot` gains `sessions: SessionBreakdown`. `current` is whichever root holds the
-newest event; it is excluded from `ranked` so it renders exactly once. `ranked` is already
-truncated to what the menu shows, so `otherCents` absorbs both un-nameable roots and named
-roots below the cut.
+`UsageSnapshot` gains `sessions: SessionBreakdown`. The model carries **every** named root;
+the view decides how many to show and derives the `Show N more` figure by subtracting the
+rounded values of the rows it actually rendered. Keeping truncation in the view means the
+"show more" expansion needs no refetch and no second code path.
 
 ### API changes
 
@@ -251,29 +244,29 @@ Session data is strictly additive; nothing here may take down the gauge.
 
 | Failure | Result |
 |---|---|
-| Local DB unreadable / Cursor not installed | Costs still shown; every root falls into `Other sessions` |
-| Root has no local record | Absorbed by the `Other` remainder, never listed as "Unnamed" |
-| Named root below the display cut | Absorbed by the same remainder |
+| Local DB unreadable / Cursor not installed | Costs still shown; the whole cycle collapses to `Unnamed sessions (N)` |
+| Root has no local record | Aggregated as `Unnamed sessions (N)`, never one row each |
+| Named root below the display cut | Absorbed by the `Show N more` remainder |
 | `subagentInfo` absent or shape changed | Session treated as top-level |
 | Parent id not resolvable | Child promoted to root |
 | Parent cycle (A→B→A) | Broken by a visited set; nodes emitted once |
 | Event without `conversationId` | Excluded from the tree, still counted in Today/cycle |
 | Page cap hit | List marked partial |
 
-The current session is pinned even when it lands in `Other sessions` — it is shown as
-`Current session` with its cost, and excluded from the `Other` sum so the total still
-reconciles.
-
 ## Testing
 
 Pure logic, TDD (`SessionRollupTests`): flat sessions; parent with children; rolled
 arithmetic; root ordering by rolled and child ordering by own; orphan promotion; cycle
-guard; event with no `conversationId`; empty input. Specifically for this revision —
-**current session pinned when it ranks outside the list**, current session not duplicated
-when it ranks first, un-nameable roots absorbed by `otherCents`, named-but-cheap roots
-below the cut also absorbed, and `current + ranked + other == totalCents` asserted as an
-invariant across every case — the property whose absence produced a $23.39-vs-$23.51
-mismatch in an earlier draft.
+guard; event with no `conversationId`; empty input; un-nameable roots aggregated into
+`unnamedCents`/`unnamedCount`; and `ranked + unnamed == totalCents` asserted as an
+invariant across every case.
+
+View logic (`SessionBreakdownTests`): the `Show N more` figure equals
+`total − Σ(rounded displayed rows)` — **the displayed column must sum exactly to the cycle
+total at any cut point**, the property whose absence produced a $23.39-vs-$23.51 mismatch
+in one draft and a $23.52 rounding mismatch in the next. Count on the row matches the
+number of hidden roots, expanding hides nothing, and a cycle with fewer roots than the cut
+shows no `Show more` row at all.
 
 Decoding (`CursorAPITests`): `conversationId` present and absent; pagination stops at
 `totalUsageEventsCount`; page cap honoured. The existing
