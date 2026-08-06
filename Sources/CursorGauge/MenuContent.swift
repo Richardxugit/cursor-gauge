@@ -160,14 +160,6 @@ struct MenuContent: View {
             ForEach(display.rows) { node in
                 sessionRow(node)
                 if expandedSessions.contains(node.id) {
-                    // The model split covers the whole job, subagents included — it is
-                    // what the standalone models section used to say, but per session.
-                    if !node.models.isEmpty {
-                        modelSplit(node.models)
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.leading, 18)
-                    }
                     subagents(of: node)
                 }
             }
@@ -234,18 +226,6 @@ struct MenuContent: View {
                     .padding(.leading, 12)
                 }
             }
-        }
-    }
-
-    /// Model names take the accent colour while their costs stay muted, so the eye can
-    /// pick the models out of a run-on line without reading it word by word.
-    private func modelSplit(_ models: [ModelSpend]) -> Text {
-        models.enumerated().reduce(Text("")) { line, entry in
-            let (index, spend) = entry
-            let separator = index == 0 ? Text("") : Text("  ·  ").foregroundStyle(.quaternary)
-            return line + separator
-                + Text(spend.model).foregroundStyle(Color.accentColor)
-                + Text(" " + Format.money(cents: spend.cents)).foregroundStyle(.tertiary)
         }
     }
 

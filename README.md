@@ -72,7 +72,6 @@ planning chat and the thirteen task chats it dispatched roll up into one line:
 ```
 TOP SESSIONS THIS CYCLE
 ▾ OXP-54 feature discussion  $16.76
-    claude-sonnet-5-thinking-high $9.39 · composer-2.5-fast $4.23 · default $3.13
     Implement Task 4 fetch hook    $2.83
     Final whole-branch code review $1.96
     Implement Task 6 Single+Side   $1.79
@@ -87,8 +86,7 @@ priciest three, then the rest on click, because one chat here spawned fifteen.
 
 A subagent list does not sum to its parent, and that is not a bug: the difference is what
 the parent chat spent on its own requests. Above, the fifteen subagents come to $13.63
-against a $16.76 parent, and the $3.13 gap is exactly the `default` line in its model
-split.
+against a $16.76 parent — the $3.13 gap is the planning chat's own turns.
 
 The last row is a remainder, computed by subtracting the rounded rows above it from the
 cycle total — so the column you read always adds up, whatever the cut point. Chats with no
@@ -97,9 +95,7 @@ appear as a single `Unnamed sessions (N)` line rather than N anonymous rows.
 
 ### Models
 
-Two views of the same money, because they answer different questions. The split inside a
-session says which model made *that job* expensive; the `MODELS` section says where the
-month went overall. It sits collapsed on one row until you ask for it:
+Where the month went by model, in one collapsed row until you ask for it:
 
 ```
 ▾ MODELS                          $26.63
@@ -108,9 +104,10 @@ month went overall. It sits collapsed on one row until you ask for it:
     composer-2.5-fast              $7.51
 ```
 
-Both are ordered by cost and read the usage events, which name real models
+Ordered by cost, and read from the usage events, which name real models
 (`claude-sonnet-5-thinking-high`) where the aggregate endpoint reports only a
-`modelIntent` (`default`).
+`modelIntent` (`default`). It covers every event, including spend in sessions that could
+not be named, so the total matches the cycle rather than just the nameable part.
 
 `default` is not a model — it is Cursor's **Auto** setting (`auto-smart`). Cursor picks
 per request and never reports which model actually ran. On this account Auto handled 65
@@ -170,7 +167,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 92 tests, no network and no database
+swift test                                   # 89 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
