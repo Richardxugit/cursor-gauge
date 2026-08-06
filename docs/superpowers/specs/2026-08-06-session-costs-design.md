@@ -72,25 +72,22 @@ we will not ship an affordance that looks live and isn't.
 
 ### Menu
 
-Roots collapsed by default, each with a disclosure triangle. `Session` is the most recent
-root, rolled up — the answer to "what is this sitting costing me".
+Roots collapsed by default, each with a disclosure triangle.
 
 ```
   ⬡  $23.51 of $200              12%
      ────────────────────────────────
      Today                     $13.64
-     Session                   $13.64
-       OXP-54 feature discussion
      Estimated total     $128 by Sep 1
-     Burn rate              $4.12 / day
      ────────────────────────────────
-     TOP SESSIONS
-     ▸ OXP-54 feature discussion $13.64
-     ▾ Order tracking e2e test    $1.64
-         Debug checkout flow      $0.71
-         Fix flaky selector       $0.55
-         Retry timeout handling   $0.38
-     ▸ Ko PR description          $0.07
+     SESSIONS
+   ● ▸ OXP-54 feature discussion  $13.64
+     ▾ Order tracking e2e test     $3.01
+         Debug checkout flow       $0.71
+         Fix flaky selector        $0.55
+     ▸ PR review comments          $0.52
+     ▸ OXP-30 test case generation $0.17
+       Other sessions              $5.93
      ────────────────────────────────
      Last request          2 min ago
 ```
@@ -98,9 +95,48 @@ root, rolled up — the answer to "what is this sitting costing me".
 Roots rank by **rolled** total, so cost of the whole piece of work drives the order.
 Children rank by own cost. Expansion state is view-local and resets when the menu closes.
 
-The section is headed `TOP SESSIONS`, not `TOP SESSIONS THIS CYCLE`. The window is still
-cycle-to-date, but every other row already establishes that frame (`of $200`, `by Sep 1`,
-burn rate), so naming it again adds length without adding meaning.
+Header is `SESSIONS`, not `TOP SESSIONS THIS CYCLE`: the window is cycle-to-date, but the
+surrounding rows (`of $200`, `by Sep 1`) already establish that frame, and with the current
+session pinned the list is no longer purely "top".
+
+#### The current session is pinned, marked `●`
+
+Ranking by cost alone loses the session you are actually in whenever it is cheap. Measured
+by replaying all 84 events of this cycle and asking, after each one, whether the session
+just used appeared in the list:
+
+| List length | Current session absent |
+|---|---|
+| top 3 | **42%** of events |
+| top 5 | **21%** of events |
+| top 8 | 7% of events |
+
+A one-in-five failure to answer "what is this session costing me" is not acceptable for
+what the feature exists to do. So the current root is always shown, first, marked `●`;
+remaining rows follow by rolled cost. When it is also the most expensive — the common
+case — it occupies one row, not two.
+
+This replaces the separate `Session` row of the first draft, which duplicated the list's
+top entry roughly 79% of the time.
+
+#### Un-nameable sessions collapse into one row
+
+Nine of this cycle's 16 roots have no local record at all — no `composerHeaders` row, no
+`composerData`, no subtitle (verified, not assumed). They cannot be named by any local
+means. Listing them individually would put "Unnamed session" at positions 3 and 4.
+
+They are summed into a single trailing `Other sessions` row instead. The list stays
+readable and still reconciles: `$13.64 + $3.01 + $0.52 + $0.17 + $0.12 + $5.93 = $23.51`,
+the cycle total.
+
+#### Rows removed
+
+- **`Burn rate`** — `estimatedTotal = burnRate × cycleLengthDays` exactly
+  ($4.12 × 31 = $128), so the two rows carried one fact. `Estimated total` survives
+  because it is directly comparable to the $200 limit.
+- **`Session`** — became the pinned `●` row above.
+
+Net: two metric rows rather than five, and no figure appears twice.
 
 ### Relabel: `Projected` → `Estimated total`
 
@@ -118,7 +154,7 @@ menu is worth keeping short. Label only; `UsageMetrics.projectedCents` is unchan
 | Component | Responsibility | Depends on |
 |---|---|---|
 | `CursorAPI` (edit) | Widen the existing events call; expose raw events | — |
-| `SessionCatalog.swift` (new, Core) | id → name / parent / subagent type, from the local DB | SQLite, read-only |
+| `SessionCatalog.swift` (new, Core) | id → name / parent, from `composerHeaders` | SQLite, read-only |
 | `SessionRollup.swift` (new, Core) | Events + catalog → tree of `SessionNode`. Pure | neither |
 | `MenuContent` (edit) | Render the section, own expansion state | the above |
 
@@ -129,7 +165,6 @@ without a database or a network, exactly as `UsageMetrics` does.
 public struct SessionNode: Equatable, Identifiable {
     public let id: String            // conversationId == composerId
     public let name: String?         // nil when not on this Mac
-    public let subagentType: String?
     public let ownCents: Double      // sum of chargedCents, incl. cursorTokenFee
     public let requestCount: Int
     public let lastActivity: Date
@@ -137,9 +172,16 @@ public struct SessionNode: Equatable, Identifiable {
 
     public var rolledCents: Double { … }   // own + children, recursively
 }
+
+public struct SessionBreakdown: Equatable {
+    public let named: [SessionNode]      // roots with a local name, by rolled cost
+    public let current: SessionNode?     // most recent root, pinned and marked
+    public let otherCents: Double        // roots with no local record, summed
+}
 ```
 
-`UsageSnapshot` gains `sessions: [SessionNode]` (roots).
+`UsageSnapshot` gains `sessions: SessionBreakdown`. `current` is whichever root holds the
+newest event; the view pins it and excludes it from `named` so it renders once.
 
 ### API changes
 
@@ -153,15 +195,20 @@ public struct SessionNode: Equatable, Identifiable {
 
 ### Catalog resolution
 
-One statement, extracting in SQL:
+Read `composerHeaders`, **not** `cursorDiskKV`:
 
 ```sql
-SELECT substr(key, 14),
+SELECT composerId,
        json_extract(value, '$.name'),
-       json_extract(value, '$.subagentInfo.parentComposerId'),
-       json_extract(value, '$.subagentInfo.subagentTypeName')
-FROM cursorDiskKV WHERE key IN (…)
+       json_extract(value, '$.subagentInfo.parentComposerId')
+FROM composerHeaders WHERE composerId IN (…)
 ```
+
+`composerHeaders` is a 256-row table keyed by `composerId` PRIMARY KEY. It carries the
+same names and the same parent links as the `composerData` blobs — **verified: 0/33 parent
+mismatches and identical name coverage (24/33)** — while avoiding blobs that average 91 KB
+and reach 692 KB. The first draft read `cursorDiskKV`; this is strictly better for the
+same result.
 
 A parent may have no billed requests of its own and so be absent from the event set, so
 resolution iterates: query, collect unseen parent ids, query again — **to a depth of 4**,
@@ -176,25 +223,33 @@ Session data is strictly additive; nothing here may take down the gauge.
 
 | Failure | Result |
 |---|---|
-| Local DB unreadable / Cursor not installed | Costs still shown, names read `Unnamed session` |
+| Local DB unreadable / Cursor not installed | Costs still shown; every root falls into `Other sessions` |
+| Root has no local record | Summed into `Other sessions`, never listed as "Unnamed" |
 | `subagentInfo` absent or shape changed | Session treated as top-level |
 | Parent id not resolvable | Child promoted to root |
 | Parent cycle (A→B→A) | Broken by a visited set; nodes emitted once |
 | Event without `conversationId` | Excluded from the tree, still counted in Today/cycle |
 | Page cap hit | List marked partial |
 
+The current session is pinned even when it lands in `Other sessions` — it is shown as
+`Current session` with its cost, and excluded from the `Other` sum so the total still
+reconciles.
+
 ## Testing
 
 Pure logic, TDD (`SessionRollupTests`): flat sessions; parent with children; rolled
 arithmetic; root ordering by rolled and child ordering by own; orphan promotion; cycle
-guard; missing name; event with no `conversationId`; empty input.
+guard; event with no `conversationId`; empty input. Specifically for this revision —
+**current session pinned when it ranks outside the list**, current session not duplicated
+when it ranks first, un-nameable roots summed into `otherCents`, and
+`named + current + other == cycle total` as an invariant.
 
 Decoding (`CursorAPITests`): `conversationId` present and absent; pagination stops at
 `totalUsageEventsCount`; page cap honoured. The existing
 `testColleagueIdentityIsNotDecoded` must keep passing.
 
-Catalog (`SessionCatalogTests`): fixture DB covering named, unnamed, subagent, and
-missing rows, plus depth-limited parent resolution.
+Catalog (`SessionCatalogTests`): fixture `composerHeaders` covering named, unnamed,
+subagent, and absent rows, plus depth-limited parent resolution.
 
 End-to-end: `--dry-run` prints the tree; **root rollups must sum to the cycle total** —
 the assertion that catches a dropped or double-counted subagent.
