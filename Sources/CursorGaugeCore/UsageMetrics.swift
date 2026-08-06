@@ -107,6 +107,15 @@ public enum Format {
         dollars >= 100 ? String(format: "$%.0f", dollars) : String(format: "$%.2f", dollars)
     }
 
+    /// The value `money(cents:)` actually prints, as a number.
+    ///
+    /// Needed wherever a column has to add up on screen: a remainder derived from raw
+    /// cents disagrees with the rounded rows above it by a penny or two.
+    public static func displayedCents(_ cents: Double) -> Double {
+        let dollars = cents / 100
+        return dollars >= 100 ? dollars.rounded() * 100 : cents.rounded()
+    }
+
     public static func percent(_ fraction: Double) -> String {
         let value = fraction * 100
         return value < 10 ? String(format: "%.1f%%", value) : String(format: "%.0f%%", value)

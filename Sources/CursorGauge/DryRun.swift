@@ -39,6 +39,27 @@ enum DryRun {
                           + " cached \(Format.tokens(model.cacheReadTokens))")
                 }
 
+                let sessions = snapshot.sessions
+                let display = sessions.display(limit: 5)
+                print("sessions\(snapshot.sessionsTruncated ? "  (PARTIAL — page cap hit)" : "")")
+                for node in display.rows {
+                    print("  \(Format.money(cents: node.rolledCents).padded(8)) \(node.name ?? "?")")
+                    for child in node.children {
+                        print("      \(Format.money(cents: child.rolledCents).padded(8)) \(child.name ?? "?")")
+                    }
+                }
+                if display.hasMore {
+                    print("  \(Format.money(cents: display.hiddenCents).padded(8)) + \(display.hiddenCount) more")
+                }
+                // The check that proves nothing was dropped or double-counted: what the
+                // menu draws must add up to the cycle it claims to describe.
+                let shown = display.rows.reduce(0) { $0 + Format.displayedCents($1.rolledCents) }
+                    + display.hiddenCents
+                let expected = Format.displayedCents(sessions.totalCents)
+                print("  ── reconcile: rows \(Format.money(cents: shown))"
+                      + " vs cycle \(Format.money(cents: expected))"
+                      + "  \(shown == expected ? "OK" : "MISMATCH")")
+
                 print("metrics")
                 print("  headline    \(Format.money(cents: metrics.spentCents))")
                 print("  of limit    \(metrics.rawFraction.map(Format.percent) ?? "n/a")")
@@ -65,5 +86,12 @@ enum DryRun {
 
     private static func daysUntil(_ date: Date) -> Int {
         Int(date.timeIntervalSinceNow / 86_400)
+    }
+}
+
+private extension String {
+    /// Right-aligns money so the reconciliation column is readable in a terminal.
+    func padded(_ width: Int) -> String {
+        String(repeating: " ", count: max(0, width - count)) + self
     }
 }

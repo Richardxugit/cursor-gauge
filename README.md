@@ -55,10 +55,38 @@ Built locally, that isn't needed.
 |---|---|
 | **Gauge + amount** | Spend this billing cycle against your limit |
 | **Today** | Spend since midnight, live |
-| **Projected** | Extrapolated end-of-cycle total (hidden for the first day — too noisy) |
-| **Burn rate** | Dollars per day so far this cycle |
+| **Estimated total** | Where the cycle lands at the current rate (hidden for the first day — too noisy) |
+| **Top sessions** | What each chat cost, subagents rolled into the chat that spawned them |
 | **Models** | Per-model cost and token split, top 3 |
 | **Last request** | When Cursor last charged something |
+
+"Estimated total" is a **forecast of the end-of-cycle total**, including what you have
+already spent — not the balance remaining. There is deliberately no burn-rate row: it is
+this figure divided by the cycle length, so the two would carry one fact between them.
+
+### Sessions
+
+Usage events carry a `conversationId`, which is the composer id of the chat in Cursor's
+history — and Cursor records `subagentInfo.parentComposerId` on any chat it spawned. So a
+planning chat and the thirteen task chats it dispatched roll up into one line:
+
+```
+TOP SESSIONS THIS CYCLE
+▾ OXP-54 feature discussion  $16.76
+    Implement Task 4 fetch hook  $2.83
+    Final whole-branch code review $1.96
+    Implement Task 6 Single+Side  $1.79
+▸ Order tracking e2e test     $3.01
+  Show 11 more                $6.05
+```
+
+Rows rank by rolled-up cost, so the size of the *job* drives the order. Click to expand a
+chat, or "Show N more" for the rest of the cycle.
+
+The last row is a remainder, computed by subtracting the rounded rows above it from the
+cycle total — so the column you read always adds up, whatever the cut point. Chats with no
+local record (created on another Mac, or aged out of Cursor's store) cannot be named and
+appear as a single `Unnamed sessions (N)` line rather than N anonymous rows.
 
 The gauge stays monochrome while healthy and only takes colour when it means something:
 amber past 60%, red past 85%, both configurable.
@@ -101,13 +129,17 @@ Only the fields for the signed-in user are declared in the decoding model, so ev
 else's details are discarded at the parse boundary and never stored, logged or displayed.
 `CursorAPITests.testColleagueIdentityIsNotDecoded` pins that.
 
+Session names are read from Cursor's own store on this Mac and rendered only in your own
+menu. They are never sent anywhere. Note they *are* your chat titles, so they can carry
+ticket numbers — worth knowing before screen-sharing.
+
 The app holds no secret of its own. It reads `cursorAuth/accessToken` **read-only** from
 Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 
 ## Development
 
 ```sh
-swift test                                   # 52 tests, no network
+swift test                                   # 82 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes

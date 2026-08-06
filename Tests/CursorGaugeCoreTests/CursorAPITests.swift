@@ -85,9 +85,17 @@ private enum Fixture {
      "totalInputTokens":"319174","totalCostCents":308.809726}
     """
 
+    /// Shape captured live: a planning chat plus two subagents it spawned, and one event
+    /// carrying no `conversationId` at all.
     static let events = """
-    {"totalUsageEventsCount":7,"usageEventsDisplay":[
-      {"timestamp":"1785658176745","model":"composer-2.5-fast","chargedCents":96.867,"isHeadless":false}]}
+    {"totalUsageEventsCount":4,"usageEventsDisplay":[
+      {"timestamp":"1785658176745","model":"claude-sonnet-5-thinking-high","chargedCents":155.216,
+       "conversationId":"kid-1","isHeadless":false},
+      {"timestamp":"1785658176000","model":"composer-2.5-fast","chargedCents":26.93,
+       "conversationId":"kid-2","isHeadless":false},
+      {"timestamp":"1785658175000","model":"composer-2.5-fast","chargedCents":96.867,
+       "conversationId":"root","isHeadless":false},
+      {"timestamp":"1785658174000","model":"composer-2.5-fast","chargedCents":10.0,"isHeadless":false}]}
     """
 
     /// Cursor serves its dashboard HTML shell for routes that no longer exist.
@@ -362,6 +370,165 @@ private extension Fixture {
     {"teamMemberSpend":[{"userId":555,"overallSpendCents":10}],
      "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000"}
     """
+}
+
+// MARK: - Sessions
+
+/// Names come from Cursor's local store in production; here they come from a dictionary,
+/// so the network path is testable with no database.
+private final class StubNaming: SessionNaming {
+    var records: [String: SessionRecord]
+    private(set) var askedFor: [String] = []
+
+    init(_ records: [String: SessionRecord]) { self.records = records }
+
+    func records(for ids: [String]) -> [String: SessionRecord] {
+        askedFor += ids
+        var found: [String: SessionRecord] = [:]
+        var pending = ids
+        while let id = pending.popLast() {
+            guard found[id] == nil, let record = records[id] else { continue }
+            found[id] = record
+            if let parent = record.parentID { pending.append(parent) }
+        }
+        return found
+    }
+}
+
+extension CursorAPITests {
+    private func sessionAPI(_ naming: StubNaming) -> CursorAPI {
+        CursorAPI(
+            credentials: credentials, transport: transport,
+            calendar: {
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = TimeZone(identifier: "UTC")!
+                return calendar
+            }(),
+            naming: naming, clock: { self.now }
+        )
+    }
+
+    func testDecodesConversationIDAndNestsSubagents() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let naming = StubNaming([
+            "root": SessionRecord(name: "OXP-54 feature discussion", parentID: nil),
+            "kid-1": SessionRecord(name: "Implement Task 7", parentID: "root"),
+            "kid-2": SessionRecord(name: "Review Task 6", parentID: "root"),
+        ])
+
+        let snapshot = try await sessionAPI(naming).fetchSnapshot()
+
+        XCTAssertEqual(snapshot.sessions.ranked.map(\.id), ["root"])
+        let root = try XCTUnwrap(snapshot.sessions.ranked.first)
+        XCTAssertEqual(root.children.map(\.id), ["kid-1", "kid-2"])
+        XCTAssertEqual(root.rolledCents, 155.216 + 26.93 + 96.867, accuracy: 0.001)
+    }
+
+    func testEventWithoutConversationIDStillCountsTowardTheTotal() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let snapshot = try await sessionAPI(StubNaming([:])).fetchSnapshot()
+
+        // All four events, including the one carrying no conversation id.
+        XCTAssertEqual(snapshot.sessions.totalCents, 155.216 + 26.93 + 96.867 + 10, accuracy: 0.001)
+        XCTAssertTrue(snapshot.sessions.ranked.isEmpty, "no names available, so nothing is listed")
+        XCTAssertEqual(snapshot.sessions.unnamedCents, snapshot.sessions.totalCents, accuracy: 0.001)
+    }
+
+    func testLastActivityComesFromTheNewestEvent() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let snapshot = try await sessionAPI(StubNaming([:])).fetchSnapshot()
+        XCTAssertEqual(snapshot.lastActivity, Date(timeIntervalSince1970: 1_785_658_176.745))
+    }
+
+    /// Before sessions existed this call ran with `pageSize: 1` purely for the timestamp,
+    /// so widening it must not have added a request to the poll.
+    func testOneEventsRequestPerSnapshotOnANormalCycle() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        _ = try await sessionAPI(StubNaming([:])).fetchSnapshot()
+
+        let calls = transport.requests.filter { $0.url?.path == "/api/dashboard/get-filtered-usage-events" }
+        XCTAssertEqual(calls.count, 1, "a short page must end paging immediately")
+    }
+
+    func testPagesUntilTheReportedTotalIsCovered() async throws {
+        // 500 events on page one, 20 on page two: paging must continue then stop.
+        final class PagingTransport: Transport, @unchecked Sendable {
+            let base: StubTransport
+            private let lock = NSLock()
+            private(set) var pages: [Int] = []
+            init(base: StubTransport) { self.base = base }
+
+            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+                guard request.url?.path == "/api/dashboard/get-filtered-usage-events" else {
+                    return try await base.send(request)
+                }
+                let body = try JSONSerialization.jsonObject(
+                    with: request.httpBody ?? Data()) as? [String: Any]
+                let page = body?["page"] as? Int ?? 1
+                lock.lock(); pages.append(page); lock.unlock()
+
+                let count = page == 1 ? 500 : 20
+                let rows = (0..<count).map {
+                    "{\"timestamp\":\"1785658176745\",\"chargedCents\":1,\"conversationId\":\"c\($0)\"}"
+                }.joined(separator: ",")
+                let json = "{\"totalUsageEventsCount\":520,\"usageEventsDisplay\":[\(rows)]}"
+                return (Data(json.utf8), HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        }
+
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let paging = PagingTransport(base: transport)
+        let api = CursorAPI(
+            credentials: credentials, transport: paging,
+            naming: StubNaming([:]), clock: { self.now }
+        )
+
+        let snapshot = try await api.fetchSnapshot()
+        XCTAssertEqual(paging.pages, [1, 2])
+        XCTAssertEqual(snapshot.sessions.totalCents, 520, accuracy: 0.001)
+        XCTAssertFalse(snapshot.sessionsTruncated)
+    }
+
+    func testStopsAtThePageCapAndFlagsTruncation() async throws {
+        // A cycle larger than 3 × 500: paging must bound itself and say the list is partial.
+        final class EndlessTransport: Transport, @unchecked Sendable {
+            let base: StubTransport
+            private let lock = NSLock()
+            private(set) var calls = 0
+            init(base: StubTransport) { self.base = base }
+
+            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+                guard request.url?.path == "/api/dashboard/get-filtered-usage-events" else {
+                    return try await base.send(request)
+                }
+                lock.lock(); calls += 1; lock.unlock()
+                let rows = (0..<500).map {
+                    "{\"timestamp\":\"1785658176745\",\"chargedCents\":1,\"conversationId\":\"c\($0)\"}"
+                }.joined(separator: ",")
+                let json = "{\"totalUsageEventsCount\":99999,\"usageEventsDisplay\":[\(rows)]}"
+                return (Data(json.utf8), HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        }
+
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let endless = EndlessTransport(base: transport)
+        let api = CursorAPI(
+            credentials: credentials, transport: endless,
+            naming: StubNaming([:]), clock: { self.now }
+        )
+
+        let snapshot = try await api.fetchSnapshot()
+        XCTAssertEqual(endless.calls, 3, "must stop at the cap rather than page forever")
+        XCTAssertTrue(snapshot.sessionsTruncated)
+    }
 }
 
 // MARK: - Async throwing helper

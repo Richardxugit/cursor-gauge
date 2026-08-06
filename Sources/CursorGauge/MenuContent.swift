@@ -10,12 +10,24 @@ struct MenuContent: View {
     /// the supported route on macOS 14+.
     @Environment(\.openSettings) private var openSettingsWindow
 
+    /// Expansion is view state, not model state: it resets when the menu closes, which is
+    /// what you want from a menu.
+    @State private var expandedSessions: Set<String> = []
+    @State private var showingAllSessions = false
+
+    /// Five keeps the menu a fixed height on a normal cycle; the rest is one click away.
+    private static let sessionRowLimit = 5
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if let metrics = store.metrics, let snapshot = store.snapshot {
                 Divider().padding(.vertical, 8)
                 figures(metrics)
+                if !snapshot.sessions.ranked.isEmpty || snapshot.sessions.unnamedCents > 0 {
+                    Divider().padding(.vertical, 8)
+                    sessions(snapshot)
+                }
                 if !snapshot.models.isEmpty {
                     Divider().padding(.vertical, 8)
                     models(snapshot)
@@ -93,16 +105,20 @@ struct MenuContent: View {
             if let snapshot = store.snapshot {
                 row("Today", Format.money(cents: snapshot.todayCents))
             }
+            // "Estimated total", not "Projected": this is a forecast of the end-of-cycle
+            // total including what's already spent, and "projected" reads as the balance
+            // remaining — which is the opposite number.
             if let projected = metrics.projectedCents, let snapshot = store.snapshot {
                 row(
-                    "Projected",
+                    "Estimated total",
                     "\(Format.money(cents: projected)) by \(Format.day(snapshot.cycleEnd))",
                     emphasis: metrics.isAheadOfPace ? colour(for: .warning) : nil
                 )
             } else {
-                row("Projected", "—", emphasis: nil)
+                row("Estimated total", "—", emphasis: nil)
             }
-            row("Burn rate", "\(Format.money(cents: metrics.burnRateCentsPerDay)) / day")
+            // No burn-rate row: it is this figure divided by the cycle length, so the two
+            // carried one fact between them.
             if metrics.isAheadOfPace {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.up.right")
@@ -114,6 +130,100 @@ struct MenuContent: View {
                 .padding(.top, 2)
             }
         }
+    }
+
+    // MARK: - Sessions
+
+    /// Where the money went, by chat, with subagent runs rolled into the chat that
+    /// spawned them.
+    private func sessions(_ snapshot: UsageSnapshot) -> some View {
+        let breakdown = snapshot.sessions
+        let display = breakdown.display(limit: showingAllSessions ? .max : Self.sessionRowLimit)
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                Text("TOP SESSIONS THIS CYCLE")
+                if snapshot.sessionsTruncated {
+                    // Say so rather than quietly under-report a very heavy cycle.
+                    Text("· partial").foregroundStyle(.tertiary)
+                }
+            }
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .kerning(0.4)
+
+            ForEach(display.rows) { node in
+                sessionRow(node)
+                if expandedSessions.contains(node.id) {
+                    ForEach(node.children) { child in
+                        HStack {
+                            Text(child.name ?? "Unnamed")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 8)
+                            Text(Format.money(cents: child.rolledCents)).monospacedDigit()
+                        }
+                        .font(.system(size: 11))
+                        .padding(.leading, 18)
+                    }
+                }
+            }
+
+            if display.hasMore {
+                if showingAllSessions {
+                    // Everything nameable is now listed, so what is left cannot be named:
+                    // no local record exists for these chats on this Mac.
+                    row("Unnamed sessions (\(display.hiddenCount))", Format.money(cents: display.hiddenCents))
+                } else {
+                    disclosure(
+                        "Show \(display.hiddenCount) more",
+                        value: Format.money(cents: display.hiddenCents)
+                    ) { showingAllSessions = true }
+                }
+            }
+            if showingAllSessions {
+                disclosure("Show less", value: nil) { showingAllSessions = false }
+            }
+        }
+    }
+
+    private func sessionRow(_ node: SessionNode) -> some View {
+        let canExpand = !node.children.isEmpty
+        let isOpen = expandedSessions.contains(node.id)
+        return Button {
+            guard canExpand else { return }
+            if isOpen { expandedSessions.remove(node.id) } else { expandedSessions.insert(node.id) }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: isOpen ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 8)
+                    .opacity(canExpand ? 1 : 0)
+                Text(node.name ?? "Unnamed session")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text(Format.money(cents: node.rolledCents)).monospacedDigit()
+            }
+            .font(.system(size: 12))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func disclosure(_ title: String, value: String?, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                if let value { Text(value).foregroundStyle(.secondary).monospacedDigit() }
+            }
+            .font(.system(size: 12))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func models(_ snapshot: UsageSnapshot) -> some View {

@@ -125,12 +125,22 @@ struct FilteredUsageResponse: Decodable {
         let timestamp: LooseNumber
         let model: String?
         let chargedCents: LooseNumber?
+        /// Cursor's composer id — the chat this request belongs to.
+        let conversationId: String?
     }
     let totalUsageEventsCount: Int?
     let usageEventsDisplay: [Event]?
 }
 
 // MARK: - Domain models
+
+/// Supplies chat names for the sessions list. A seam so the network path can be tested
+/// without a database, and so a missing local store degrades instead of failing.
+public protocol SessionNaming: AnyObject {
+    func records(for ids: [String]) -> [String: SessionRecord]
+}
+
+extension SessionCatalog: SessionNaming {}
 
 /// Who we are, as far as Cursor's billing is concerned. Discovered at startup so the
 /// same build works for any signed-in user without configuration.
@@ -161,12 +171,19 @@ public struct UsageSnapshot: Equatable {
     public let models: [ModelUsage]
     public let lastActivity: Date?
     public let capturedAt: Date
+    /// Per-chat costs for this cycle, subagents rolled into the chat that spawned them.
+    public let sessions: SessionBreakdown
+    /// The page cap was reached, so the sessions list covers only part of the cycle.
+    public let sessionsTruncated: Bool
 
     public init(
         settledSpendCents: Double, liveSpendCents: Double, limitDollars: Double?,
         cycleStart: Date, cycleEnd: Date, todayCents: Double,
-        models: [ModelUsage], lastActivity: Date?, capturedAt: Date
+        models: [ModelUsage], lastActivity: Date?, capturedAt: Date,
+        sessions: SessionBreakdown = .empty, sessionsTruncated: Bool = false
     ) {
+        self.sessions = sessions
+        self.sessionsTruncated = sessionsTruncated
         self.settledSpendCents = settledSpendCents
         self.liveSpendCents = liveSpendCents
         self.limitDollars = limitDollars
@@ -186,19 +203,26 @@ public final class CursorAPI {
     private let credentials: CredentialsProviding
     private let clock: () -> Date
     private let calendar: Calendar
+    private let naming: SessionNaming
     private var identity: AccountIdentity?
 
     private static let base = "https://cursor.com"
+    /// One page covers a normal cycle (84 events over the first six days of a heavy
+    /// month); three bounds the work if someone's usage is an order of magnitude higher.
+    private static let eventPageSize = 500
+    private static let maxEventPages = 3
 
     public init(
         credentials: CredentialsProviding,
         transport: Transport = URLSessionTransport(),
         calendar: Calendar = .current,
+        naming: SessionNaming = SessionCatalog(),
         clock: @escaping () -> Date = Date.init
     ) {
         self.credentials = credentials
         self.transport = transport
         self.calendar = calendar
+        self.naming = naming
         self.clock = clock
     }
 
@@ -310,9 +334,13 @@ public final class CursorAPI {
 
         async let cycleUsage = aggregate(identity: identity, from: cycleStart, to: now)
         async let todayUsage = aggregate(identity: identity, from: calendar.startOfDay(for: now), to: now)
-        async let latest = lastActivity(identity: identity, since: calendar.startOfDay(for: now))
+        async let cycleEvents = events(identity: identity, from: cycleStart, to: now)
 
-        let (cycle, today, activity) = try await (cycleUsage, todayUsage, latest)
+        let (cycle, today, feed) = try await (cycleUsage, todayUsage, cycleEvents)
+        let sessions = SessionBreakdown.build(
+            events: feed.events,
+            catalog: naming.records(for: Array(Set(feed.events.compactMap(\.conversationID))))
+        )
 
         return UsageSnapshot(
             settledSpendCents: mine.overallSpendCents?.value ?? 0,
@@ -330,8 +358,10 @@ public final class CursorAPI {
                     cacheReadTokens: Int($0.cacheReadTokens?.value ?? 0)
                 )
             }.sorted { $0.cents > $1.cents },
-            lastActivity: activity,
-            capturedAt: now
+            lastActivity: feed.events.map(\.timestamp).max(),
+            capturedAt: now,
+            sessions: sessions,
+            sessionsTruncated: feed.truncated
         )
     }
 
@@ -352,21 +382,61 @@ public final class CursorAPI {
         )
     }
 
-    private func lastActivity(identity: AccountIdentity, since: Date) async throws -> Date? {
-        let response = try await call(
-            FilteredUsageResponse.self,
-            path: "/api/dashboard/get-filtered-usage-events",
-            body: [
-                "teamId": identity.teamID,
-                "userId": identity.numericUserID,
-                "page": 1,
-                "pageSize": 1,
-                "startDate": String(Int(since.timeIntervalSince1970 * 1000)),
-                "endDate": String(Int(clock().timeIntervalSince1970 * 1000)),
-            ]
+    struct EventFeed {
+        let events: [SessionEvent]
+        /// The page cap stopped us before the cycle was exhausted.
+        let truncated: Bool
+    }
+
+    /// Every billed request in the window.
+    ///
+    /// This one call serves both the sessions list and "Last request"; before sessions
+    /// existed it ran with `pageSize: 1` for the timestamp alone, so widening it adds no
+    /// request to a poll.
+    private func events(identity: AccountIdentity, from start: Date, to end: Date) async throws -> EventFeed {
+        guard end > start else { return EventFeed(events: [], truncated: false) }
+
+        var collected: [FilteredUsageResponse.Event] = []
+        var reported: Int?
+        var exhaustedPages = true
+
+        for page in 1...Self.maxEventPages {
+            let response = try await call(
+                FilteredUsageResponse.self,
+                path: "/api/dashboard/get-filtered-usage-events",
+                body: [
+                    "teamId": identity.teamID,
+                    "userId": identity.numericUserID,
+                    "page": page,
+                    "pageSize": Self.eventPageSize,
+                    "startDate": String(Int(start.timeIntervalSince1970 * 1000)),
+                    "endDate": String(Int(end.timeIntervalSince1970 * 1000)),
+                ]
+            )
+            let batch = response.usageEventsDisplay ?? []
+            collected += batch
+            reported = response.totalUsageEventsCount ?? reported
+
+            // Stop on a short page too: a server that ignores `page` would otherwise have
+            // us request the same rows until the cap.
+            if batch.count < Self.eventPageSize || (reported.map { collected.count >= $0 } ?? false) {
+                exhaustedPages = false
+                break
+            }
+        }
+
+        return EventFeed(
+            events: collected.map {
+                SessionEvent(
+                    conversationID: $0.conversationId,
+                    cents: $0.chargedCents?.value ?? 0,
+                    timestamp: Date(timeIntervalSince1970: $0.timestamp.value / 1000)
+                )
+            },
+            // Only a genuine cap hit counts as truncation. A server that simply reports a
+            // larger total than it serves is not us losing data.
+            truncated: exhaustedPages && (reported.map { collected.count < $0 } ?? false)
         )
-        guard let newest = response.usageEventsDisplay?.first else { return nil }
-        return Date(timeIntervalSince1970: newest.timestamp.value / 1000)
     }
 }
 
