@@ -13,10 +13,14 @@ struct MenuContent: View {
     /// Expansion is view state, not model state: it resets when the menu closes, which is
     /// what you want from a menu.
     @State private var expandedSessions: Set<String> = []
+    /// Sessions whose full subagent list is showing.
+    @State private var expandedChildren: Set<String> = []
     @State private var showingAllSessions = false
 
     /// Five keeps the menu a fixed height on a normal cycle; the rest is one click away.
     private static let sessionRowLimit = 5
+    /// Three inside an already-nested list, where every row is indented and secondary.
+    private static let subagentRowLimit = 3
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -166,18 +170,7 @@ struct MenuContent: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.leading, 18)
                     }
-                    ForEach(node.children) { child in
-                        HStack {
-                            Text(child.name ?? "Unnamed")
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer(minLength: 8)
-                            Text(Format.money(cents: child.rolledCents)).monospacedDigit()
-                        }
-                        .font(.system(size: 11))
-                        .padding(.leading, 18)
-                    }
+                    subagents(of: node)
                 }
             }
 
@@ -197,6 +190,51 @@ struct MenuContent: View {
                 disclosure("Show less", value: nil) { showingAllSessions = false }
             }
         }
+    }
+
+    /// Subagents get the same treatment as the top-level list: the priciest few, and the
+    /// rest one click away. One chat spawned fifteen, which is a lot of menu.
+    @ViewBuilder
+    private func subagents(of node: SessionNode) -> some View {
+        let showAll = expandedChildren.contains(node.id)
+        let display = node.childDisplay(limit: showAll ? .max : Self.subagentRowLimit)
+
+        ForEach(display.rows) { child in
+            HStack {
+                Text(child.name ?? "Unnamed")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text(Format.money(cents: child.rolledCents)).monospacedDigit()
+            }
+            .font(.system(size: 11))
+            .padding(.leading, 18)
+        }
+        if display.hasMore {
+            subagentDisclosure(
+                "Show \(display.hiddenCount) more",
+                value: Format.money(cents: display.hiddenCents)
+            ) { expandedChildren.insert(node.id) }
+        } else if showAll && !node.children.isEmpty {
+            subagentDisclosure("Show less", value: nil) { expandedChildren.remove(node.id) }
+        }
+    }
+
+    private func subagentDisclosure(
+        _ title: String, value: String?, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title).foregroundStyle(.tertiary)
+                Spacer(minLength: 8)
+                if let value { Text(value).foregroundStyle(.tertiary).monospacedDigit() }
+            }
+            .font(.system(size: 11))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 18)
     }
 
     private func sessionRow(_ node: SessionNode) -> some View {

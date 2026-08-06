@@ -54,7 +54,7 @@ final class SessionRollupTests: XCTestCase {
         XCTAssertEqual(root.id, "parent")
         XCTAssertEqual(root.ownCents, 221, accuracy: 0.001)
         XCTAssertEqual(root.rolledCents, 683, accuracy: 0.001)
-        XCTAssertEqual(root.children.map(\.id), ["kid1", "kid2"], "children rank by own cost")
+        XCTAssertEqual(root.children.map(\.id), ["kid1", "kid2"], "children rank by rolled cost")
     }
 
     func testRollsUpThroughMoreThanOneLevel() {
@@ -213,6 +213,40 @@ final class SessionRollupTests: XCTestCase {
         )
         XCTAssertEqual(breakdown.ranked[0].rolledCents, 125, accuracy: 0.001)
         XCTAssertEqual(breakdown.ranked[0].models.map(\.model), ["gpt"], "no phantom model row")
+    }
+
+    // MARK: - Subagent truncation
+
+    func testShowsOnlyTheTopSubagentsAndCountsTheRest() {
+        // The real shape that motivated this: one chat with fifteen subagents.
+        let kids = (1...15).map { event("kid\($0)", Double($0) * 10) }
+        var catalog: [String: SessionRecord] = ["root": named("Root")]
+        for index in 1...15 { catalog["kid\(index)"] = named("Kid \(index)", parent: "root") }
+
+        let breakdown = SessionBreakdown.build(events: [event("root", 5)] + kids, catalog: catalog)
+        let display = breakdown.ranked[0].childDisplay(limit: 3)
+
+        XCTAssertEqual(display.rows.map(\.id), ["kid15", "kid14", "kid13"], "priciest first")
+        XCTAssertEqual(display.hiddenCount, 12)
+        // 10+20+…+120, the twelve cheapest.
+        XCTAssertEqual(display.hiddenCents, 780, accuracy: 0.001)
+        XCTAssertTrue(display.hasMore)
+    }
+
+    func testNoSubagentRemainderWhenTheyAllFit() {
+        let breakdown = SessionBreakdown.build(
+            events: [event("root", 5), event("kid", 10)],
+            catalog: ["root": named("Root"), "kid": named("Kid", parent: "root")]
+        )
+        let display = breakdown.ranked[0].childDisplay(limit: 3)
+        XCTAssertEqual(display.rows.count, 1)
+        XCTAssertFalse(display.hasMore)
+    }
+
+    func testLeafSessionHasNothingToExpand() {
+        let breakdown = SessionBreakdown.build(events: [event("a", 50)], catalog: ["a": named("Alpha")])
+        XCTAssertFalse(breakdown.ranked[0].childDisplay(limit: 3).hasMore)
+        XCTAssertTrue(breakdown.ranked[0].childDisplay(limit: 3).rows.isEmpty)
     }
 
     // MARK: - Display truncation

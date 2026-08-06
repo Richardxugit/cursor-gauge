@@ -62,6 +62,21 @@ public struct SessionNode: Equatable, Identifiable {
     public var rolledCents: Double {
         children.reduce(ownCents) { $0 + $1.rolledCents }
     }
+
+    /// Cuts the subagent list the same way the top-level list is cut.
+    ///
+    /// The hidden total covers the hidden children only. It deliberately does not
+    /// reconcile to `rolledCents`: the difference is what the parent chat spent on its
+    /// own requests, which is not a subagent and would be a lie to label as one.
+    public func childDisplay(limit: Int) -> SessionDisplay {
+        let rows = Array(children.prefix(max(limit, 0)))
+        let hidden = children.dropFirst(rows.count)
+        return SessionDisplay(
+            rows: rows,
+            hiddenCount: hidden.count,
+            hiddenCents: hidden.reduce(0) { $0 + Format.displayedCents($1.rolledCents) }
+        )
+    }
 }
 
 /// What the menu renders when the list is cut to a given length.
@@ -139,7 +154,9 @@ public struct SessionBreakdown: Equatable {
         for (child, parent) in parentOf { childrenOf[parent, default: []].append(child) }
 
         func node(_ id: String) -> SessionNode {
-            let kids = (childrenOf[id] ?? []).map(node).sorted { $0.ownCents > $1.ownCents }
+            // By rolled cost, matching the top level: a subagent that spawned its own
+            // should rank on the whole subtree, not just its own requests.
+            let kids = (childrenOf[id] ?? []).map(node).sorted { $0.rolledCents > $1.rolledCents }
             // Merge each subagent's split upward so a parent describes the whole job.
             var totals = ownModels[id] ?? [:]
             for kid in kids {

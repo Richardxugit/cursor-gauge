@@ -73,15 +73,22 @@ planning chat and the thirteen task chats it dispatched roll up into one line:
 TOP SESSIONS THIS CYCLE
 ▾ OXP-54 feature discussion  $16.76
     claude-sonnet-5-thinking-high $9.39 · composer-2.5-fast $4.23 · default $3.13
-    Implement Task 4 fetch hook  $2.83
+    Implement Task 4 fetch hook    $2.83
     Final whole-branch code review $1.96
-    Implement Task 6 Single+Side  $1.79
+    Implement Task 6 Single+Side   $1.79
+    Show 12 more                   $7.05
 ▸ Order tracking e2e test     $3.01
   Show 11 more                $6.05
 ```
 
 Rows rank by rolled-up cost, so the size of the *job* drives the order. Click to expand a
-chat, or "Show N more" for the rest of the cycle.
+chat, or "Show N more" for the rest of the cycle. Subagents are cut the same way — the
+priciest three, then the rest on click, because one chat here spawned fifteen.
+
+A subagent list does not sum to its parent, and that is not a bug: the difference is what
+the parent chat spent on its own requests. Above, the fifteen subagents come to $13.63
+against a $16.76 parent, and the $3.13 gap is exactly the `default` line in its model
+split.
 
 There is no separate models section. It answered the same question one level less
 usefully — a global "you spent $9.39 on Sonnet" doesn't say *which work* burned it. The
