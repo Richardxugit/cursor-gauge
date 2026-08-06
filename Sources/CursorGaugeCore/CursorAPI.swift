@@ -429,6 +429,7 @@ public final class CursorAPI {
             events: collected.map {
                 SessionEvent(
                     conversationID: $0.conversationId,
+                    model: $0.model,
                     cents: $0.chargedCents?.value ?? 0,
                     timestamp: Date(timeIntervalSince1970: $0.timestamp.value / 1000)
                 )

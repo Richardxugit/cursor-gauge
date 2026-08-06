@@ -57,7 +57,6 @@ Built locally, that isn't needed.
 | **Today** | Spend since midnight, live |
 | **Estimated total** | Where the cycle lands at the current rate (hidden for the first day — too noisy) |
 | **Top sessions** | What each chat cost, subagents rolled into the chat that spawned them |
-| **Models** | Per-model cost and token split, top 3 |
 | **Last request** | When Cursor last charged something |
 
 "Estimated total" is a **forecast of the end-of-cycle total**, including what you have
@@ -73,6 +72,7 @@ planning chat and the thirteen task chats it dispatched roll up into one line:
 ```
 TOP SESSIONS THIS CYCLE
 ▾ OXP-54 feature discussion  $16.76
+    claude-sonnet-5-thinking-high $9.39 · composer-2.5-fast $4.23 · default $3.13
     Implement Task 4 fetch hook  $2.83
     Final whole-branch code review $1.96
     Implement Task 6 Single+Side  $1.79
@@ -82,6 +82,12 @@ TOP SESSIONS THIS CYCLE
 
 Rows rank by rolled-up cost, so the size of the *job* drives the order. Click to expand a
 chat, or "Show N more" for the rest of the cycle.
+
+There is no separate models section. It answered the same question one level less
+usefully — a global "you spent $9.39 on Sonnet" doesn't say *which work* burned it. The
+split now sits inside each session and covers the whole job, subagents included. It also
+gets better data: usage events name real models (`claude-sonnet-5-thinking-high`) where
+the aggregate endpoint reports a `modelIntent` (`default`).
 
 The last row is a remainder, computed by subtracting the rounded rows above it from the
 cycle total — so the column you read always adds up, whatever the cut point. Chats with no

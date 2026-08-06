@@ -28,10 +28,10 @@ struct MenuContent: View {
                     Divider().padding(.vertical, 8)
                     sessions(snapshot)
                 }
-                if !snapshot.models.isEmpty {
-                    Divider().padding(.vertical, 8)
-                    models(snapshot)
-                }
+                // No standalone models section: it answered the same question as the
+                // sessions list ("where did it go") one level less usefully. The split
+                // now sits inside each session, where it says which model made *that*
+                // job expensive.
                 Divider().padding(.vertical, 8)
                 freshness(snapshot)
             }
@@ -155,6 +155,17 @@ struct MenuContent: View {
             ForEach(display.rows) { node in
                 sessionRow(node)
                 if expandedSessions.contains(node.id) {
+                    // The model split covers the whole job, subagents included — it is
+                    // what the standalone models section used to say, but per session.
+                    if !node.models.isEmpty {
+                        Text(node.models.map {
+                            "\($0.model) \(Format.money(cents: $0.cents))"
+                        }.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, 18)
+                    }
                     ForEach(node.children) { child in
                         HStack {
                             Text(child.name ?? "Unnamed")
@@ -224,18 +235,6 @@ struct MenuContent: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    private func models(_ snapshot: UsageSnapshot) -> some View {
-        VStack(spacing: 5) {
-            ForEach(snapshot.models.prefix(3), id: \.model) { model in
-                row(model.model, Format.money(cents: model.cents))
-                Text("\(Format.tokens(model.inputTokens)) in · \(Format.tokens(model.outputTokens)) out · \(Format.tokens(model.cacheReadTokens)) cached")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
     }
 
     private func freshness(_ snapshot: UsageSnapshot) -> some View {

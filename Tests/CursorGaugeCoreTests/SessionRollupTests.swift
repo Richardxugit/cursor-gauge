@@ -4,8 +4,13 @@ import XCTest
 final class SessionRollupTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_785_999_000)
 
-    private func event(_ id: String?, _ cents: Double, _ offset: TimeInterval = 0) -> SessionEvent {
-        SessionEvent(conversationID: id, cents: cents, timestamp: t0.addingTimeInterval(offset))
+    private func event(
+        _ id: String?, _ cents: Double, _ offset: TimeInterval = 0, model: String? = nil
+    ) -> SessionEvent {
+        SessionEvent(
+            conversationID: id, model: model, cents: cents,
+            timestamp: t0.addingTimeInterval(offset)
+        )
     }
 
     private func named(_ name: String, parent: String? = nil) -> SessionRecord {
@@ -144,6 +149,70 @@ final class SessionRollupTests: XCTestCase {
         )
         let sum = breakdown.ranked.reduce(0) { $0 + $1.rolledCents } + breakdown.unnamedCents
         XCTAssertEqual(sum, breakdown.totalCents, accuracy: 0.001)
+    }
+
+    // MARK: - Model split
+
+    func testSplitsASessionsSpendByModel() {
+        let breakdown = SessionBreakdown.build(
+            events: [
+                event("a", 100, model: "claude-sonnet-5-thinking-high"),
+                event("a", 40, model: "composer-2.5-fast"),
+                event("a", 60, model: "claude-sonnet-5-thinking-high"),
+            ],
+            catalog: ["a": named("Alpha")]
+        )
+        XCTAssertEqual(
+            breakdown.ranked[0].models,
+            [
+                ModelSpend(model: "claude-sonnet-5-thinking-high", cents: 160),
+                ModelSpend(model: "composer-2.5-fast", cents: 40),
+            ],
+            "models rank by cost"
+        )
+    }
+
+    /// The split shown against a parent has to describe the whole job, subagents included —
+    /// a planning chat's own requests are a small part of what it spent.
+    func testModelSplitRollsUpThroughSubagents() {
+        let breakdown = SessionBreakdown.build(
+            events: [
+                event("root", 10, model: "composer-2.5-fast"),
+                event("kid", 200, model: "claude-sonnet-5-thinking-high"),
+                event("kid", 30, model: "composer-2.5-fast"),
+            ],
+            catalog: ["root": named("Root"), "kid": named("Kid", parent: "root")]
+        )
+        XCTAssertEqual(
+            breakdown.ranked[0].models,
+            [
+                ModelSpend(model: "claude-sonnet-5-thinking-high", cents: 200),
+                ModelSpend(model: "composer-2.5-fast", cents: 40),
+            ]
+        )
+    }
+
+    func testModelSplitSumsToTheSessionTotal() {
+        let breakdown = SessionBreakdown.build(
+            events: [
+                event("root", 96.867, model: "composer-2.5-fast"),
+                event("kid", 155.216, model: "claude-sonnet-5-thinking-high"),
+            ],
+            catalog: ["root": named("Root"), "kid": named("Kid", parent: "root")]
+        )
+        let node = breakdown.ranked[0]
+        XCTAssertEqual(
+            node.models.reduce(0) { $0 + $1.cents }, node.rolledCents, accuracy: 0.001
+        )
+    }
+
+    func testEventWithNoModelIsStillCountedInTheSessionTotal() {
+        let breakdown = SessionBreakdown.build(
+            events: [event("a", 100, model: "gpt"), event("a", 25, model: nil)],
+            catalog: ["a": named("Alpha")]
+        )
+        XCTAssertEqual(breakdown.ranked[0].rolledCents, 125, accuracy: 0.001)
+        XCTAssertEqual(breakdown.ranked[0].models.map(\.model), ["gpt"], "no phantom model row")
     }
 
     // MARK: - Display truncation

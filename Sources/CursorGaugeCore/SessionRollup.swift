@@ -5,13 +5,31 @@ public struct SessionEvent: Equatable {
     /// Cursor's `conversationId`, which is the composer id of the chat in its history.
     /// `nil` on the rare event that carries none.
     public let conversationID: String?
+    /// The model actually billed, e.g. `claude-sonnet-5-thinking-high`. Note the usage
+    /// events name real models where the aggregate endpoint reports a `modelIntent`
+    /// (`default`), so this is the more precise of the two.
+    public let model: String?
     public let cents: Double
     public let timestamp: Date
 
-    public init(conversationID: String?, cents: Double, timestamp: Date) {
+    public init(conversationID: String?, model: String?, cents: Double, timestamp: Date) {
         self.conversationID = conversationID
+        self.model = model
         self.cents = cents
         self.timestamp = timestamp
+    }
+}
+
+/// What one model cost within a session.
+public struct ModelSpend: Equatable, Identifiable {
+    public let model: String
+    public let cents: Double
+
+    public var id: String { model }
+
+    public init(model: String, cents: Double) {
+        self.model = model
+        self.cents = cents
     }
 }
 
@@ -36,6 +54,9 @@ public struct SessionNode: Equatable, Identifiable {
     public let requestCount: Int
     public let lastActivity: Date
     public let children: [SessionNode]
+    /// Spend by model across the whole job — this chat and every subagent under it —
+    /// ranked by cost. Sums to `rolledCents` apart from events that named no model.
+    public let models: [ModelSpend]
 
     /// What the whole piece of work cost — this chat plus everything under it.
     public var rolledCents: Double {
@@ -87,11 +108,13 @@ public struct SessionBreakdown: Equatable {
         var own: [String: Double] = [:]
         var count: [String: Int] = [:]
         var seen: [String: Date] = [:]
+        var ownModels: [String: [String: Double]] = [:]
         for e in events {
             guard let id = e.conversationID else { continue }
             own[id, default: 0] += e.cents
             count[id, default: 0] += 1
             seen[id] = max(seen[id] ?? .distantPast, e.timestamp)
+            if let model = e.model { ownModels[id, default: [:]][model, default: 0] += e.cents }
         }
 
         // A parent may itself have billed nothing, so pull ancestors in from the catalog.
@@ -117,13 +140,21 @@ public struct SessionBreakdown: Equatable {
 
         func node(_ id: String) -> SessionNode {
             let kids = (childrenOf[id] ?? []).map(node).sorted { $0.ownCents > $1.ownCents }
+            // Merge each subagent's split upward so a parent describes the whole job.
+            var totals = ownModels[id] ?? [:]
+            for kid in kids {
+                for spend in kid.models { totals[spend.model, default: 0] += spend.cents }
+            }
             return SessionNode(
                 id: id,
                 name: catalog[id]?.name,
                 ownCents: own[id] ?? 0,
                 requestCount: count[id] ?? 0,
                 lastActivity: kids.reduce(seen[id] ?? .distantPast) { max($0, $1.lastActivity) },
-                children: kids
+                children: kids,
+                models: totals
+                    .map { ModelSpend(model: $0.key, cents: $0.value) }
+                    .sorted { ($0.cents, $1.model) > ($1.cents, $0.model) }
             )
         }
 
