@@ -72,7 +72,9 @@ we will not ship an affordance that looks live and isn't.
 
 ### Menu
 
-Roots collapsed by default, each with a disclosure triangle.
+Two sections: the session you are in, then everything else ranked by cost. The current
+session is expanded by default — it is the one you want to see inside — and the ranked
+list is collapsed.
 
 ```
   ⬡  $23.51 of $200              12%
@@ -80,24 +82,32 @@ Roots collapsed by default, each with a disclosure triangle.
      Today                     $13.64
      Estimated total     $128 by Sep 1
      ────────────────────────────────
-     SESSIONS
-   ● ▸ OXP-54 feature discussion  $13.64
-     ▾ Order tracking e2e test     $3.01
-         Debug checkout flow       $0.71
-         Fix flaky selector        $0.55
+   ● ▾ OXP-54 feature discussion  $13.64
+         Implement Task 4 fetch    $2.83
+         Implement Task 6 Single   $1.79
+         Implement Task 7 Mixed    $1.55
+     ────────────────────────────────
+     TOP SESSIONS THIS CYCLE
+     ▸ Order tracking e2e test     $3.01
      ▸ PR review comments          $0.52
      ▸ OXP-30 test case generation $0.17
-       Other sessions              $5.93
+     ▸ OXP-81 getOrderView update  $0.12
+       Other sessions              $6.06
      ────────────────────────────────
      Last request          2 min ago
 ```
 
 Roots rank by **rolled** total, so cost of the whole piece of work drives the order.
-Children rank by own cost. Expansion state is view-local and resets when the menu closes.
+Children rank by own cost. Both sections expand; expansion state is view-local and resets
+when the menu closes.
 
-Header is `SESSIONS`, not `TOP SESSIONS THIS CYCLE`: the window is cycle-to-date, but the
-surrounding rows (`of $200`, `by Sep 1`) already establish that frame, and with the current
-session pinned the list is no longer purely "top".
+The current session is excluded from the ranked list, so it renders exactly once. That is
+why the list below can start at $3.01 while a larger figure sits above it.
+
+`THIS CYCLE` is retained on the second header here, having been dropped from the earlier
+single-section design. With a "now" section directly above it, the qualifier draws a real
+contrast — this session versus the whole month — rather than restating the frame the
+surrounding rows already set.
 
 #### The current session is pinned, marked `●`
 
@@ -112,22 +122,37 @@ just used appeared in the list:
 | top 8 | 7% of events |
 
 A one-in-five failure to answer "what is this session costing me" is not acceptable for
-what the feature exists to do. So the current root is always shown, first, marked `●`;
-remaining rows follow by rolled cost. When it is also the most expensive — the common
-case — it occupies one row, not two.
+what the feature exists to do. So the current root gets its own section above the ranked
+list, always first, marked `●`, and is removed from the ranking below.
 
-This replaces the separate `Session` row of the first draft, which duplicated the list's
-top entry roughly 79% of the time.
+This replaces the separate `Session` row of the first draft, which showed the name and
+figure a second time and duplicated the list's top entry roughly 79% of the time. Giving
+the current session the full row — expandable, with its subagents — costs no more space
+than that row did and always says something the list cannot.
 
-#### Un-nameable sessions collapse into one row
+#### `Other sessions` is the remainder, defined by subtraction
 
 Nine of this cycle's 16 roots have no local record at all — no `composerHeaders` row, no
 `composerData`, no subtitle (verified, not assumed). They cannot be named by any local
-means. Listing them individually would put "Unnamed session" at positions 3 and 4.
+means, and listing them individually would put "Unnamed session" at positions 3 and 4.
 
-They are summed into a single trailing `Other sessions` row instead. The list stays
-readable and still reconciles: `$13.64 + $3.01 + $0.52 + $0.17 + $0.12 + $5.93 = $23.51`,
-the cycle total.
+But un-nameable roots are not the only ones that fall off the list: the ranked section is
+capped at four, so named-but-cheap roots drop off too. Defining `Other` as only the
+un-nameable ones silently loses those — an earlier draft of this spec did exactly that and
+its own arithmetic came to $23.39 against a $23.51 cycle.
+
+So `Other sessions` is defined by **subtraction, not by category**:
+
+```
+other = cycleTotal − current − Σ(listed)
+```
+
+This reconciles by construction, whatever the list length or how many roots are nameable:
+
+```
+$13.64 + $3.01 + $0.52 + $0.17 + $0.12 + $6.06 = $23.51   ✓
+        other = 9 un-nameable ($5.93) + 2 ranked-out named ($0.13)
+```
 
 #### Rows removed
 
@@ -174,14 +199,17 @@ public struct SessionNode: Equatable, Identifiable {
 }
 
 public struct SessionBreakdown: Equatable {
-    public let named: [SessionNode]      // roots with a local name, by rolled cost
     public let current: SessionNode?     // most recent root, pinned and marked
-    public let otherCents: Double        // roots with no local record, summed
+    public let ranked: [SessionNode]     // named roots by rolled cost, current excluded
+    public let otherCents: Double        // remainder: total − current − ranked
+    public let totalCents: Double        // invariant: current + ranked + other == total
 }
 ```
 
 `UsageSnapshot` gains `sessions: SessionBreakdown`. `current` is whichever root holds the
-newest event; the view pins it and excludes it from `named` so it renders once.
+newest event; it is excluded from `ranked` so it renders exactly once. `ranked` is already
+truncated to what the menu shows, so `otherCents` absorbs both un-nameable roots and named
+roots below the cut.
 
 ### API changes
 
@@ -224,7 +252,8 @@ Session data is strictly additive; nothing here may take down the gauge.
 | Failure | Result |
 |---|---|
 | Local DB unreadable / Cursor not installed | Costs still shown; every root falls into `Other sessions` |
-| Root has no local record | Summed into `Other sessions`, never listed as "Unnamed" |
+| Root has no local record | Absorbed by the `Other` remainder, never listed as "Unnamed" |
+| Named root below the display cut | Absorbed by the same remainder |
 | `subagentInfo` absent or shape changed | Session treated as top-level |
 | Parent id not resolvable | Child promoted to root |
 | Parent cycle (A→B→A) | Broken by a visited set; nodes emitted once |
@@ -241,8 +270,10 @@ Pure logic, TDD (`SessionRollupTests`): flat sessions; parent with children; rol
 arithmetic; root ordering by rolled and child ordering by own; orphan promotion; cycle
 guard; event with no `conversationId`; empty input. Specifically for this revision —
 **current session pinned when it ranks outside the list**, current session not duplicated
-when it ranks first, un-nameable roots summed into `otherCents`, and
-`named + current + other == cycle total` as an invariant.
+when it ranks first, un-nameable roots absorbed by `otherCents`, named-but-cheap roots
+below the cut also absorbed, and `current + ranked + other == totalCents` asserted as an
+invariant across every case — the property whose absence produced a $23.39-vs-$23.51
+mismatch in an earlier draft.
 
 Decoding (`CursorAPITests`): `conversationId` present and absent; pagination stops at
 `totalUsageEventsCount`; page cap honoured. The existing
