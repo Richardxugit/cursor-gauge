@@ -81,8 +81,8 @@ root, rolled up — the answer to "what is this sitting costing me".
      Today                     $13.64
      Session                   $13.64
        OXP-54 feature discussion
-     Projected           $118 by Sep 1
-     Burn rate              $4.70 / day
+     Projected           $128 by Sep 1
+     Burn rate              $4.12 / day
      ────────────────────────────────
      TOP SESSIONS THIS CYCLE
      ▸ OXP-54 feature discussion $13.64
