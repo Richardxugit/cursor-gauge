@@ -1,11 +1,11 @@
 # CursorGauge
 
 A macOS menu bar indicator for your Cursor spend. A hexagon that fills from the base as
-you approach your monthly limit, with burn rate and end-of-cycle projection behind a
-click.
+you approach your monthly limit, with an end-of-cycle estimate and a per-chat cost
+breakdown behind a click.
 
 ```
-  ⬡  $3.58                    ← menu bar
+  ⬡  $26.63                   ← menu bar
 ```
 
 The shape is a flat-top hexagon rather than a progress ring for a specific reason: on a
@@ -152,7 +152,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 82 tests, no network and no database
+swift test                                   # 89 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
