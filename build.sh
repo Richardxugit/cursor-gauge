@@ -9,7 +9,8 @@ cd "$(dirname "$0")"
 
 APP_NAME="CursorGauge"
 BUNDLE_ID="com.pxu.cursorgauge"
-VERSION="1.0.0"
+# Single source of truth, so the bundle and the .dmg filename can never disagree.
+VERSION=$(tr -d '[:space:]' < VERSION)
 BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 
@@ -55,10 +56,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Signing (ad-hoc)"
-# Ad-hoc signature: enough for macOS to run it locally. Not notarized, so a copy that
-# is *downloaded* elsewhere needs its quarantine flag cleared — see README.
-codesign --force --sign - --timestamp=none "$APP" 2>/dev/null
+# A real Developer ID (if one is ever bought) is passed in by package.sh; without it we
+# fall back to an ad-hoc signature, which is enough for macOS to run it locally but not
+# enough to survive being *downloaded* elsewhere — see README.
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    echo "==> Signing (ad-hoc)"
+    codesign --force --sign - --timestamp=none "$APP" 2>/dev/null
+else
+    echo "==> Signing ($SIGN_IDENTITY)"
+    # Hardened runtime and a secure timestamp are both preconditions for notarization.
+    codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$APP"
+fi
 
 echo "==> Verifying"
 codesign --verify --verbose=1 "$APP" 2>&1 | sed 's/^/    /'

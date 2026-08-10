@@ -144,15 +144,56 @@ than shown as current.
 
 ## Sharing it with a colleague
 
+```sh
+./package.sh     # → dist/CursorGauge-1.0.0.dmg, about 1 MB
+```
+
+A drag-to-Applications disk image: the app, an `Applications` shortcut, and a note about
+the first launch. Send them the `.dmg`. The version comes from the `VERSION` file, which
+`build.sh` reads too, so the bundle and the filename can't disagree.
+
 The build has no account details compiled in — user id, team and cycle are discovered at
-runtime — so the same `.app` shows each person their own usage. They need:
+runtime — so the same `.app` shows each person their own usage. It reads whichever
+account is signed into Cursor on that machine; copying it elsewhere doesn't carry your
+data with it. Recipients need:
 
 1. Cursor installed and signed in on their Mac
 2. macOS 14 or later (Intel and Apple Silicon both work — the binary is universal)
-3. The `xattr` command above, once
+3. To clear quarantine once, per the note in the image — see below
 
-It reads whichever account is signed into Cursor on that machine. Copying it elsewhere
-doesn't carry your data with it.
+### The Gatekeeper step, and how to remove it
+
+There is no Apple Developer certificate on this machine, so `package.sh` falls back to an
+**ad-hoc signature**. That is a real signature — the bundle can't be tampered with
+unnoticed — but it isn't tied to an Apple-registered identity, so a *downloaded* copy is
+quarantined and refused on first open. Since macOS 15 the old right-click → Open bypass
+is gone; it takes a Terminal command or a trip to System Settings:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/CursorGauge.app
+```
+
+The image ships with that instruction in `Read me first.txt`, so it survives being
+forwarded without you attached to it.
+
+To remove the step entirely you need a **paid Apple Developer account** ($99/yr) and
+Apple's notarization. With a "Developer ID Application" certificate in the keychain
+`package.sh` finds it and uses it automatically — no flags, and the hardened runtime and
+secure timestamp notarization requires are applied for you. Then store a credential once
+and pass `--notarize`:
+
+```sh
+xcrun notarytool store-credentials CursorGauge \
+    --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
+./package.sh --notarize
+```
+
+That uploads the image, waits for Apple, and staples the ticket so it validates offline.
+The result opens on any Mac with a double-click and no warning, and the readme note is
+dropped from the image because there is nothing left to explain.
+
+For a handful of colleagues the `xattr` line is honestly fine. The certificate is worth
+it once you're handing this to people you can't easily talk to.
 
 ## Privacy
 
@@ -176,6 +217,8 @@ swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
 ./build.sh                                   # universal .app in ./build
+./build.sh --install                         # …and replace /Applications/CursorGauge.app
+./package.sh                                 # distributable .dmg in ./dist
 ```
 
 `--dry-run` is the quickest way to check the app against
