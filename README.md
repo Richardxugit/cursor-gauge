@@ -152,7 +152,7 @@ request timeout to notice.
 ## Sharing it with a colleague
 
 ```sh
-./package.sh     # → dist/CursorGauge-1.0.0.dmg, about 1 MB
+./package.sh     # → dist/CursorGauge-<VERSION>.dmg, about 1 MB
 ```
 
 A drag-to-Applications disk image: the app, an `Applications` shortcut, and a note about
