@@ -70,6 +70,7 @@ public final class UsageStore {
     private let credentials: CredentialsProviding
     private let activity: CursorActivityObserving
     private let clock: () -> Date
+    private let deadline: TimeInterval
     private var timer: Timer?
     private var consecutiveFailures = 0
 
@@ -78,12 +79,14 @@ public final class UsageStore {
         api: CursorAPI? = nil,
         activity: CursorActivityObserving = WorkspaceActivityObserver(),
         thresholds: GaugeThresholds = .default,
+        deadline: TimeInterval = 45,
         clock: @escaping () -> Date = Date.init
     ) {
         self.credentials = credentials
         self.api = api ?? CursorAPI(credentials: credentials, clock: clock)
         self.activity = activity
         self.thresholds = thresholds
+        self.deadline = deadline
         self.clock = clock
     }
 
@@ -118,10 +121,16 @@ public final class UsageStore {
     private func scheduleNext() {
         timer?.invalidate()
         let interval = currentInterval()
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+        // Repeating, deliberately. A one-shot timer re-armed from inside its own fire
+        // handler makes the next poll conditional on this one finishing, so a single
+        // reading that never returned left the app with no timer at all and no way back.
+        // The clock now runs independently of whether any given reading succeeds.
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                await self?.refresh()
-                self?.scheduleNext()
+                guard let self else { return }
+                await self.refresh()
+                // Cursor may have quit or come to the front since this timer was armed.
+                if self.currentInterval() != interval { self.scheduleNext() }
             }
         }
     }
@@ -153,7 +162,7 @@ public final class UsageStore {
         defer { isRefreshing = false }
 
         do {
-            let fresh = try await api.fetchSnapshot()
+            let fresh = try await withDeadline(deadline) { [api] in try await api.fetchSnapshot() }
             snapshot = fresh
             lastUpdated = fresh.capturedAt
             status = .ready
@@ -170,6 +179,30 @@ public final class UsageStore {
             }
             status = .failed(describe(error))
             return false
+        }
+    }
+
+    /// Runs `operation`, abandoning it after `seconds`.
+    ///
+    /// This is what stops `isRefreshing` latching: that guard makes every other way into
+    /// the store — opening the menu, ⌘R, waking from sleep — a no-op while a reading is
+    /// outstanding, so a reading that never finishes silently disables all of them.
+    ///
+    /// Cancelling the loser also tears down the underlying request, so a stalled socket
+    /// is released rather than left open for the next poll to queue up behind.
+    private func withDeadline<T>(
+        _ seconds: TimeInterval,
+        _ operation: @escaping () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw APIError.timedOut
+            }
+            guard let first = try await group.next() else { throw APIError.timedOut }
+            group.cancelAll()
+            return first
         }
     }
 

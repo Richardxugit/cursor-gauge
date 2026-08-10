@@ -10,6 +10,8 @@ public enum APIError: Error, CustomStringConvertible {
     case transport(Error)
     case shapeChanged(String)
     case noTeamFound
+    /// The reading outlived its deadline and was abandoned.
+    case timedOut
 
     public var description: String {
         switch self {
@@ -17,6 +19,7 @@ public enum APIError: Error, CustomStringConvertible {
         case .notJSON(let endpoint): return "Cursor's API changed shape (\(endpoint))"
         case .http(let status, let endpoint): return "Cursor API error \(status) (\(endpoint))"
         case .transport: return "Can't reach cursor.com"
+        case .timedOut: return "cursor.com didn't answer in time"
         case .shapeChanged(let detail): return "Unexpected data from Cursor: \(detail)"
         case .noTeamFound: return "No Cursor team with a spend limit found for this account"
         }
@@ -40,6 +43,11 @@ public struct URLSessionTransport: Transport {
     public init(timeout: TimeInterval = 20) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
+        // `timeoutIntervalForRequest` only measures the gap between packets, so it never
+        // fires on a connection that is dead but still open — the state a VPN leaves
+        // behind when it roams. Without an overall ceiling (the default is seven days)
+        // such a request hangs indefinitely. This one bounds the whole load.
+        configuration.timeoutIntervalForResource = timeout * 2
         configuration.httpShouldSetCookies = false      // we set the Cookie header ourselves
         configuration.httpCookieAcceptPolicy = .never
         session = URLSession(configuration: configuration)

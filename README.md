@@ -142,6 +142,13 @@ Plus immediately on menu open, on ⌘R, and on wake from sleep. Repeated failure
 exponentially to a 15-minute ceiling. A reading old enough to mislead is dimmed rather
 than shown as current.
 
+The clock runs independently of whether any given reading succeeds, and no reading may
+take longer than 45 seconds. Both matter more than they sound: a request that never
+returns used to leave the app with no timer and no way back, frozen on its last figure
+for as long as it stayed open. A VPN that roams is enough to cause it — the socket stays
+open with nothing ever arriving, so there is no gap between packets for an ordinary
+request timeout to notice.
+
 ## Sharing it with a colleague
 
 ```sh
@@ -212,7 +219,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 89 tests, no network and no database
+swift test                                   # 91 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
