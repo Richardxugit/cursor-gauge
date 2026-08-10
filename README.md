@@ -115,15 +115,35 @@ Ordered by cost, and read from the usage events, which name real models
 named, so the total matches the cycle rather than just the nameable part.
 
 **"Auto" is a relabelling, and worth understanding.** Cursor bills those requests under
-`default` — a placeholder that names nothing and looks like a bug in a cost list. It
-turns out to mean *the picker was on Auto and Cursor didn't record what it routed to*:
-every chat producing `default` events on this account has `modelConfig.modelName ==
-"auto-smart"` in Cursor's own local store, and nothing in the event carries the resolved
-model — not `tokenUsage`, not `subscriptionProductId`, and nothing in the local store
-either. The pick is genuinely unrecoverable, so the row takes the picker's word for it.
-`auto-smart`, the other label the same setting produces, merges into the same row.
+`default` — a placeholder that names nothing and looks like a bug in a cost list. Nothing
+in the event carries the model that actually ran: not `tokenUsage`, not
+`subscriptionProductId`, not the aggregate, and nothing in Cursor's local store either.
+The pick is unrecoverable, so the row takes the model picker's word for it.
 
-Auto requests that Cursor *does* resolve keep the name it gives them, such as
+What it means becomes clear by joining the billing feed to Cursor's own local
+`modelConfig` for each chat. Over one cycle, every request:
+
+| chat's local setting | billed as | reqs |
+|---|---|---|
+| Auto, `optimize_for: cost` | `default` | 108 |
+| Auto, `optimize_for: balanced` | `Cursor Grok 4.5 (Auto Balanced)` | 7 |
+| picker never touched (`default`) | `default` | 11 |
+| no local record for the chat | `default` | 21 |
+| any explicitly chosen model | itself | 17 |
+
+So **Auto discloses its pick on Balanced and hides it on Cost** — without exception here.
+Not one `default` request came from a chat set to a named model. That is also the useful
+lever: if you want Cursor to itemise what it ran, move Auto off Cost. On this account the
+Cost tier is the single largest line in the cycle, and the one line that cannot be broken
+down.
+
+The row is labelled `Auto` rather than `Auto (Cost)` on purpose. A third of these
+requests come from chats whose picker was never touched or that have no local record at
+all, so Cost is not provable for them — and the local config is the chat's *current*
+setting, so reading it per-event would retroactively relabel past spend whenever you
+change a chat's mode. `Auto` is true in every one of those cases.
+
+Auto requests Cursor *does* resolve keep the name it gives them, such as
 `Cursor Grok 4.5 (Auto Balanced)`. Knowing which model ran beats knowing it was Auto, so
 those are never folded away — which is why one row says `Auto` and another names an Auto
 pick. That is the difference between "Cursor chose, and told us" and "Cursor chose, and
