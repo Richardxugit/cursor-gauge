@@ -357,15 +357,20 @@ public final class CursorAPI {
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,
             todayCents: today.totalCostCents?.value ?? 0,
-            models: (cycle.aggregations ?? []).map {
-                ModelUsage(
-                    model: $0.modelIntent,
-                    cents: $0.totalCents?.value ?? 0,
-                    inputTokens: Int($0.inputTokens?.value ?? 0),
-                    outputTokens: Int($0.outputTokens?.value ?? 0),
-                    cacheReadTokens: Int($0.cacheReadTokens?.value ?? 0)
+            // The aggregate reports `default` and `auto-smart` as separate intents even
+            // though both mean Auto, so they are relabelled and then summed — otherwise
+            // the same setting would appear as two rows under one name.
+            models: (cycle.aggregations ?? []).reduce(into: [String: ModelUsage]()) { totals, a in
+                let name = ModelName.display(a.modelIntent)
+                let existing = totals[name]
+                totals[name] = ModelUsage(
+                    model: name,
+                    cents: (existing?.cents ?? 0) + (a.totalCents?.value ?? 0),
+                    inputTokens: (existing?.inputTokens ?? 0) + Int(a.inputTokens?.value ?? 0),
+                    outputTokens: (existing?.outputTokens ?? 0) + Int(a.outputTokens?.value ?? 0),
+                    cacheReadTokens: (existing?.cacheReadTokens ?? 0) + Int(a.cacheReadTokens?.value ?? 0)
                 )
-            }.sorted { $0.cents > $1.cents },
+            }.values.sorted { ($0.cents, $1.model) > ($1.cents, $0.model) },
             lastActivity: feed.events.map(\.timestamp).max(),
             capturedAt: now,
             sessions: sessions,

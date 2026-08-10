@@ -187,6 +187,33 @@ final class SessionRollupTests: XCTestCase {
         XCTAssertEqual(breakdown.models.map(\.model), ["dear", "middling", "cheap"])
     }
 
+    /// `default` is what Cursor bills an Auto request under when it doesn't record which
+    /// model it routed to. It names nothing and reads like a placeholder, so it carries
+    /// the picker's own word instead — and merges with `auto-smart`, the other label the
+    /// same setting produces.
+    func testAutoRequestsAreLabelledAuto() {
+        let breakdown = SessionBreakdown.build(
+            events: [
+                event("a", 100, model: "default"),
+                event("a", 50, model: "auto-smart"),
+                event("a", 25, model: "composer-2.5-fast"),
+            ],
+            catalog: ["a": named("Alpha")]
+        )
+        XCTAssertEqual(breakdown.models.map(\.model), ["Auto", "composer-2.5-fast"])
+        XCTAssertEqual(breakdown.models.first?.cents, 150, "the two Auto labels are one row")
+    }
+
+    /// A model Cursor *did* name stays as Cursor named it, Auto pick or not: the name is
+    /// strictly more information than "Auto", and inventing a shorter one risks being wrong.
+    func testAResolvedAutoPickKeepsItsName() {
+        let breakdown = SessionBreakdown.build(
+            events: [event("a", 100, model: "Cursor Grok 4.5 (Auto Balanced)")],
+            catalog: ["a": named("Alpha")]
+        )
+        XCTAssertEqual(breakdown.models.map(\.model), ["Cursor Grok 4.5 (Auto Balanced)"])
+    }
+
     func testCycleModelListOmitsEventsWithNoModel() {
         let breakdown = SessionBreakdown.build(
             events: [event("a", 100, model: "sonnet"), event("a", 40, model: nil)],

@@ -21,6 +21,27 @@ public struct SessionEvent: Equatable {
 }
 
 /// What one model cost within a session.
+/// How a billed model is written in the menu.
+public enum ModelName {
+    /// What Cursor calls the setting these requests were made under.
+    public static let auto = "Auto"
+
+    /// The labels Cursor bills an Auto request under when it doesn't say which model it
+    /// actually routed to. Verified against this account: every chat producing them had
+    /// `modelConfig.modelName == "auto-smart"` locally, and nothing in the event — not
+    /// `tokenUsage`, not `subscriptionProductId` — carries the resolved model. Neither
+    /// does Cursor's own store. So the pick is genuinely unrecoverable, and the honest
+    /// label is the one from the model picker rather than a placeholder like `default`.
+    private static let autoAliases: Set<String> = ["default", "auto-smart"]
+
+    /// A model Cursor *did* name keeps that name, Auto pick or not — including forms like
+    /// `Cursor Grok 4.5 (Auto Balanced)`. Knowing which model ran beats knowing it was
+    /// Auto, and shortening Cursor's own wording risks saying something untrue.
+    public static func display(_ raw: String) -> String {
+        autoAliases.contains(raw) ? auto : raw
+    }
+}
+
 public struct ModelSpend: Equatable, Identifiable {
     public let model: String
     public let cents: Double
@@ -177,7 +198,7 @@ public struct SessionBreakdown: Equatable {
         var cycleModels: [String: Double] = [:]
         for e in events {
             guard let model = e.model else { continue }
-            cycleModels[model, default: 0] += e.cents
+            cycleModels[ModelName.display(model), default: 0] += e.cents
         }
 
         let namedTotal = ranked.reduce(0) { $0 + $1.rolledCents }

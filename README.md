@@ -102,21 +102,32 @@ appear as a single `Unnamed sessions (N)` line rather than N anonymous rows.
 Where the month went by model, in one collapsed row until you ask for it:
 
 ```
-▾ MODELS                          $26.63
-    default                        $9.73
-    claude-sonnet-5-thinking-high  $9.39
-    composer-2.5-fast              $7.51
+▾ MODELS                            $47.02
+    Auto                             $25.06
+    claude-sonnet-5-thinking-high    $11.83
+    composer-2.5-fast                 $7.51
+    Cursor Grok 4.5 (Auto Balanced)   $2.54
 ```
 
 Ordered by cost, and read from the usage events, which name real models
 (`claude-sonnet-5-thinking-high`) where the aggregate endpoint reports only a
-`modelIntent` (`default`). It covers every event, including spend in sessions that could
-not be named, so the total matches the cycle rather than just the nameable part.
+`modelIntent`. It covers every event, including spend in sessions that could not be
+named, so the total matches the cycle rather than just the nameable part.
 
-`default` is not a model — it is Cursor's **Auto** setting (`auto-smart`). Cursor picks
-per request and never reports which model actually ran. On this account Auto handled 65
-requests for $9.73 while 5 hand-picked Sonnet-thinking requests cost $9.39: the difference
-is `cursorTokenFee`, charged on the premium model and zero on the rest.
+**"Auto" is a relabelling, and worth understanding.** Cursor bills those requests under
+`default` — a placeholder that names nothing and looks like a bug in a cost list. It
+turns out to mean *the picker was on Auto and Cursor didn't record what it routed to*:
+every chat producing `default` events on this account has `modelConfig.modelName ==
+"auto-smart"` in Cursor's own local store, and nothing in the event carries the resolved
+model — not `tokenUsage`, not `subscriptionProductId`, and nothing in the local store
+either. The pick is genuinely unrecoverable, so the row takes the picker's word for it.
+`auto-smart`, the other label the same setting produces, merges into the same row.
+
+Auto requests that Cursor *does* resolve keep the name it gives them, such as
+`Cursor Grok 4.5 (Auto Balanced)`. Knowing which model ran beats knowing it was Auto, so
+those are never folded away — which is why one row says `Auto` and another names an Auto
+pick. That is the difference between "Cursor chose, and told us" and "Cursor chose, and
+didn't".
 
 ### Colour
 
@@ -219,7 +230,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 91 tests, no network and no database
+swift test                                   # 93 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes

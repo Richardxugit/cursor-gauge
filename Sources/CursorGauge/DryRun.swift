@@ -40,6 +40,14 @@ enum DryRun {
                 }
 
                 let sessions = snapshot.sessions
+                // The menu's MODELS section reads the events, not the aggregate above:
+                // the events name models the aggregate only reports an intent for. Print
+                // both, or --dry-run can agree with the dashboard while the menu differs.
+                print("models (as the menu shows them)")
+                for spend in sessions.models {
+                    print("  \(Format.money(cents: spend.cents).padded(8)) \(spend.model)")
+                }
+
                 let display = sessions.display(limit: 5)
                 print("sessions\(snapshot.sessionsTruncated ? "  (PARTIAL — page cap hit)" : "")")
                 for node in display.rows {
