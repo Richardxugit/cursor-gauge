@@ -19,18 +19,45 @@ never look like "none".
 
 ## Why this exists
 
-The existing Cursor usage trackers target individual **Pro** plans: they read
-`GET /api/usage` and gauge against `hardLimit`. On an **enterprise pooled token
-contract** those return zeros and `2147483647` respectively, so the gauge is empty or
-meaningless.
+Building was the second choice. The existing trackers — **CursorMeter**,
+**cursor-status-bar**, **SessionWatcher**, the Raycast *Cursor Costs* extension — all
+work the same way, and all of them are correct for the plan they target: a **Pro**
+subscription, where you get N included requests against a hard limit. They read
+`GET /api/usage` and gauge against `hardLimit`.
 
-The real per-user figure lives somewhere none of them look — `get-team-spend`, which
-returns spend, limit and billing cycle in one response:
+On an **enterprise pooled-token contract** those endpoints aren't wrong so much as
+*blank*, which is worse — a gauge renders blank as a confident zero. Live, on this
+account, mid-cycle, with real money spent:
 
 ```jsonc
-{ "userId": 307093031, "overallSpendCents": 331,
-  "monthlyLimitDollars": 200, "effectivePerUserLimitDollars": 200 }
+GET  /api/usage                     → {"gpt-4":{"numRequests":0,"maxRequestUsage":null}, …}
+POST /api/dashboard/get-hard-limit  → {"hardLimit":2147483647}
 ```
+
+`maxRequestUsage` is `null` because this contract doesn't meter included requests at all,
+and `2147483647` is `Int32.max` — a sentinel for "no personal cap", not a limit. Gauge
+$49.59 against a notional $2.1-billion ceiling and you get **0.000002%**: a bar that
+never moves, never warns, and looks perfectly healthy on the day you hit the real one.
+
+The figure that actually governs the account is in the **team dashboard** endpoints,
+because on this contract your spend is a slice of a team pool. Spend, limit and billing
+cycle arrive together:
+
+```jsonc
+POST /api/dashboard/get-team-spend
+{ "overallSpendCents": 4959, "monthlyLimitDollars": 200,
+  "effectivePerUserLimitDollars": 200,
+  "subscriptionCycleStart": "1785542400000", "nextCycleStart": "1788220800000" }
+```
+
+Two things plausibly kept the existing tools away from it. The route is a `POST` that
+answers `403 Invalid origin for state-changing request` unless you send
+`Origin: https://cursor.com`, which reads as "forbidden" rather than "add a header". And
+it's a *team* endpoint — an unlikely place to go looking for a personal number.
+
+**On a Pro plan, use one of the tools above instead.** This one would tell you nothing
+you couldn't get more easily. It earns its place only where the personal endpoints come
+back empty.
 
 ## Install
 
