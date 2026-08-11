@@ -59,6 +59,27 @@ it's a *team* endpoint — an unlikely place to go looking for a personal number
 you couldn't get more easily. It earns its place only where the personal endpoints come
 back empty.
 
+### The one that does target enterprise
+
+[cursor-usage-tracker](https://github.com/ofershap/cursor-usage-tracker) is the closest
+real alternative, and in one respect better built: it reads Cursor's **documented Admin
+API** (`/teams/spend`, `/teams/filtered-usage-events`, `/teams/groups`) rather than the
+undocumented dashboard routes, so it won't break the way this can.
+
+It answers a different question, though. It's a self-hosted Next.js dashboard for
+watching a *whole team* — per-developer spend, model mix, anomaly detection, alerting.
+Cost governance for whoever owns the budget.
+
+Two things rule it out here. It authenticates with an **Admin API key**, issued only to
+team admins, and this account is `TEAM_ROLE_MEMBER` — the key isn't ours to create. And a
+dashboard you have to open is not a glance: the entire point of a menu bar item is seeing
+the number without first deciding to look.
+
+They aren't competing. If you can get an admin key and want team-wide cost governance,
+run that. This stays useful alongside it, because it answers "what am *I* spending, right
+now" without a login, a container, or a browser tab — and it names the chats, which a
+server-side tool cannot do, since chat titles never leave your Mac.
+
 ## Install
 
 ```sh
