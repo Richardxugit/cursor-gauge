@@ -4,6 +4,11 @@ A macOS menu bar indicator for your Cursor spend. A hexagon that fills like a pi
 you approach your monthly limit, with an end-of-cycle estimate and a per-chat cost
 breakdown behind a click.
 
+Built for **one member of an enterprise team**, watching their own slice of a pooled
+contract. Not a team dashboard, and it needs no admin rights: every person who installs
+it sees their own usage, discovered from whichever account is signed into Cursor on that
+Mac.
+
 ```
   ⬡  $30.32                   ← menu bar
 ```
