@@ -150,6 +150,30 @@ cycle total — so the column you read always adds up, whatever the cut point. C
 local record (created on another Mac, or aged out of Cursor's store) cannot be named and
 appear as a single `Unnamed sessions (N)` line rather than N anonymous rows.
 
+### Cloud agents
+
+```
+  $3.01 Order tracking e2e test
+  $0.54 ☁ Cloud agents (1)
+ $15.89 Show 22 more
+```
+
+A cloud agent runs on Cursor's servers, so its chat never reaches this Mac and can't be
+named. Rather than disappear into `Unnamed sessions`, that spend gets its own row: `(1)`
+is **one agent run**, not one request, matching every other row in the list where the
+count is how many pieces of work were collapsed into it.
+
+That is deliberately all the detail there is. The question worth answering is *whether
+cloud agents are costing you anything, and how much* — a cost question. Naming the
+individual agent is an activity question, and answering it would need Cursor's Background
+Agents API and an admin key.
+
+Cursor marks these with both `isHeadless: true` and a `cloudAgentId`, and uses that id as
+the `conversationId`; either signal alone is taken as proof, so the row survives Cursor
+dropping one. If a cloud chat ever does sync down it keeps its name and carries a ☁
+marker instead — a session is only called cloud when its *whole* subtree ran there, since
+one begun in the cloud and continued locally is genuinely both.
+
 ### Models
 
 Where the month went by model, in one collapsed row until you ask for it:
@@ -303,7 +327,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 93 tests, no network and no database
+swift test                                   # 99 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
