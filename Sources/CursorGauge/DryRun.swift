@@ -56,12 +56,16 @@ enum DryRun {
                         print("      \(Format.money(cents: child.rolledCents).padded(8)) \(child.name ?? "?")")
                     }
                 }
+                if sessions.cloudCount > 0 {
+                    print("  \(Format.money(cents: sessions.cloudCents).padded(8)) ☁ cloud agents (\(sessions.cloudCount))")
+                }
                 if display.hasMore {
                     print("  \(Format.money(cents: display.hiddenCents).padded(8)) + \(display.hiddenCount) more")
                 }
                 // The check that proves nothing was dropped or double-counted: what the
                 // menu draws must add up to the cycle it claims to describe.
                 let shown = display.rows.reduce(0) { $0 + Format.displayedCents($1.rolledCents) }
+                    + Format.displayedCents(sessions.cloudCents)
                     + display.hiddenCents
                 let expected = Format.displayedCents(sessions.totalCents)
                 print("  ── reconcile: rows \(Format.money(cents: shown))"

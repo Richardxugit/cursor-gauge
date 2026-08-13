@@ -164,6 +164,22 @@ struct MenuContent: View {
                 }
             }
 
+            // Cloud agents run on Cursor's servers, so their chats usually never reach
+            // this Mac and cannot be named. "Ran in the cloud" is worth saying where
+            // "unnamed" says nothing, so they get their own row rather than the bucket.
+            if breakdown.cloudCount > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "cloud")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 8)
+                    Text("Cloud agents (\(breakdown.cloudCount))")
+                    Spacer(minLength: 8)
+                    Text(Format.money(cents: breakdown.cloudCents)).monospacedDigit()
+                }
+                .font(.system(size: 12))
+            }
+
             if display.hasMore {
                 if showingAllSessions {
                     // Everything nameable is now listed, so what is left cannot be named:
@@ -289,6 +305,14 @@ struct MenuContent: View {
                 Text(node.name ?? "Unnamed session")
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if node.isCloud {
+                    // Where the work ran is part of what the row costs you: a cloud agent
+                    // bills while you are not at the machine.
+                    Image(systemName: "cloud")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .help("Ran as a cloud agent")
+                }
                 Spacer(minLength: 8)
                 Text(Format.money(cents: node.rolledCents)).monospacedDigit()
             }

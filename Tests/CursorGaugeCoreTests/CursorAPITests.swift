@@ -425,6 +425,29 @@ extension CursorAPITests {
         XCTAssertEqual(root.rolledCents, 155.216 + 26.93 + 96.867, accuracy: 0.001)
     }
 
+    /// Captured live from a real cloud agent run: Cursor sets both `isHeadless` and a
+    /// `cloudAgentId`, and uses that id as the `conversationId`. Either alone is taken as
+    /// proof, so the row survives Cursor dropping one of them.
+    func testCloudAgentEventsAreRecognisedFromEitherSignal() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        transport.routes["/api/dashboard/get-filtered-usage-events"] = ("""
+        {"totalUsageEventsCount":3,"usageEventsDisplay":[
+          {"timestamp":"1786590855593","model":"cursor-grok-4.6-high-fast","chargedCents":53.68,
+           "conversationId":"bc-41003f3d","isHeadless":true,"cloudAgentId":"bc-41003f3d"},
+          {"timestamp":"1786590855000","model":"composer-2.5-fast","chargedCents":10.0,
+           "conversationId":"bc-other","cloudAgentId":"bc-other"},
+          {"timestamp":"1786590854000","model":"composer-2.5-fast","chargedCents":5.0,
+           "conversationId":"local-chat","isHeadless":false}]}
+        """, 200)
+
+        let sessions = try await sessionAPI(StubNaming([:])).fetchSnapshot().sessions
+
+        XCTAssertEqual(sessions.cloudCount, 2, "isHeadless and cloudAgentId each suffice")
+        XCTAssertEqual(sessions.cloudCents, 63.68, accuracy: 0.001)
+        XCTAssertEqual(sessions.unnamedCents, 5.0, accuracy: 0.001, "the local chat is not cloud")
+    }
+
     func testEventWithoutConversationIDStillCountsTowardTheTotal() async throws {
         routeHappyPath()
         transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)

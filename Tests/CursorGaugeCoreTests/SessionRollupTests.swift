@@ -5,11 +5,12 @@ final class SessionRollupTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_785_999_000)
 
     private func event(
-        _ id: String?, _ cents: Double, _ offset: TimeInterval = 0, model: String? = nil
+        _ id: String?, _ cents: Double, _ offset: TimeInterval = 0,
+        model: String? = nil, cloud: Bool = false
     ) -> SessionEvent {
         SessionEvent(
             conversationID: id, model: model, cents: cents,
-            timestamp: t0.addingTimeInterval(offset)
+            timestamp: t0.addingTimeInterval(offset), isCloud: cloud
         )
     }
 
@@ -221,6 +222,84 @@ final class SessionRollupTests: XCTestCase {
         )
         XCTAssertEqual(breakdown.models, [ModelSpend(model: "sonnet", cents: 100)])
         XCTAssertEqual(breakdown.totalCents, 140, accuracy: 0.001, "the total still counts it")
+    }
+
+    // MARK: - Cloud agents
+
+    /// A cloud agent runs on Cursor's servers, so its chat may never reach this Mac and
+    /// cannot be named. Without this it would vanish into "Unnamed sessions" — the money
+    /// visible but its origin not — which is the one thing a cost view shouldn't do.
+    func testUnnameableCloudSpendIsSeparatedFromMerelyUnnamed() {
+        let breakdown = SessionBreakdown.build(
+            events: [
+                event("known", 100),
+                event("ghost", 40),                 // ran here, but no local record
+                event("robot", 60, cloud: true),    // ran in the cloud
+            ],
+            catalog: ["known": named("Known")]
+        )
+        XCTAssertEqual(breakdown.cloudCents, 60, accuracy: 0.001)
+        XCTAssertEqual(breakdown.cloudCount, 1)
+        XCTAssertEqual(breakdown.unnamedCents, 40, accuracy: 0.001, "cloud spend is not counted twice")
+        XCTAssertEqual(breakdown.unnamedCount, 1)
+    }
+
+    /// Cloud chats may well sync down, in which case they get a name like any other. The
+    /// row still has to say where the work ran, so the flag rides on the node too.
+    func testANamedSessionRunEntirelyInTheCloudIsMarked() {
+        let breakdown = SessionBreakdown.build(
+            events: [event("a", 100, cloud: true), event("a", 50, cloud: true)],
+            catalog: ["a": named("Nightly refactor")]
+        )
+        XCTAssertEqual(breakdown.ranked.map(\.name), ["Nightly refactor"])
+        XCTAssertTrue(breakdown.ranked[0].isCloud)
+        XCTAssertEqual(breakdown.cloudCents, 0, "a named session is shown by name, not in the bucket")
+    }
+
+    /// Picking a cloud chat up locally and carrying on in it is a session that ran in both
+    /// places. Calling that "cloud" would overstate what we know, so it stays unmarked.
+    func testASessionRunInBothPlacesIsNotMarkedCloud() {
+        let breakdown = SessionBreakdown.build(
+            events: [event("a", 100, cloud: true), event("a", 50)],
+            catalog: ["a": named("Started remote, finished here")]
+        )
+        XCTAssertFalse(breakdown.ranked[0].isCloud)
+    }
+
+    /// A parent billed nothing itself is cloud only if everything beneath it was.
+    func testAParentIsCloudOnlyWhenItsWholeSubtreeIs() {
+        let allCloud = SessionBreakdown.build(
+            events: [event("kid", 50, cloud: true)],
+            catalog: ["top": named("Top"), "kid": named("Kid", parent: "top")]
+        )
+        XCTAssertTrue(allCloud.ranked[0].isCloud)
+
+        let mixed = SessionBreakdown.build(
+            events: [event("kid", 50, cloud: true), event("kid2", 50)],
+            catalog: [
+                "top": named("Top"),
+                "kid": named("Kid", parent: "top"), "kid2": named("Kid2", parent: "top"),
+            ]
+        )
+        XCTAssertFalse(mixed.ranked[0].isCloud)
+    }
+
+    /// The invariant the whole list rests on: whatever is drawn must add up to the cycle.
+    /// A cloud row is drawn separately, so the "show more" remainder has to exclude it.
+    func testTheColumnStillAddsUpWithACloudRow() {
+        let breakdown = SessionBreakdown.build(
+            events: [
+                event("a", 900), event("b", 500), event("c", 300),
+                event("ghost", 111), event("robot", 222, cloud: true),
+            ],
+            catalog: ["a": named("A"), "b": named("B"), "c": named("C")]
+        )
+        let display = breakdown.display(limit: 2)
+        let drawn = display.rows.reduce(0) { $0 + Format.displayedCents($1.rolledCents) }
+            + Format.displayedCents(breakdown.cloudCents)
+            + display.hiddenCents
+        XCTAssertEqual(drawn, Format.displayedCents(breakdown.totalCents))
+        XCTAssertEqual(display.hiddenCount, 2, "the cloud row is not also counted as hidden")
     }
 
     // MARK: - Subagent truncation

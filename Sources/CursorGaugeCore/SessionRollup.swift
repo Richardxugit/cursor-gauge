@@ -11,12 +11,19 @@ public struct SessionEvent: Equatable {
     public let model: String?
     public let cents: Double
     public let timestamp: Date
+    /// Cursor's `isHeadless` — the request ran without an editor attached, which is what a
+    /// cloud agent is. Defaulted so the common case reads as ordinary work.
+    public let isCloud: Bool
 
-    public init(conversationID: String?, model: String?, cents: Double, timestamp: Date) {
+    public init(
+        conversationID: String?, model: String?, cents: Double, timestamp: Date,
+        isCloud: Bool = false
+    ) {
         self.conversationID = conversationID
         self.model = model
         self.cents = cents
         self.timestamp = timestamp
+        self.isCloud = isCloud
     }
 }
 
@@ -75,6 +82,24 @@ public struct SessionNode: Equatable, Identifiable {
     public let requestCount: Int
     public let lastActivity: Date
     public let children: [SessionNode]
+    /// Every billed request in this whole subtree ran without an editor attached.
+    ///
+    /// Deliberately all-or-nothing. A chat started in the cloud and picked up locally is
+    /// genuinely both, and calling it "cloud" would claim more than we know.
+    public let isCloud: Bool
+
+    public init(
+        id: String, name: String?, ownCents: Double, requestCount: Int,
+        lastActivity: Date, children: [SessionNode], isCloud: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.ownCents = ownCents
+        self.requestCount = requestCount
+        self.lastActivity = lastActivity
+        self.children = children
+        self.isCloud = isCloud
+    }
 
     /// What the whole piece of work cost — this chat plus everything under it.
     public var rolledCents: Double {
@@ -115,13 +140,19 @@ public struct SessionBreakdown: Equatable {
     public let unnamedCents: Double
     /// Roots only — an unattributed event is spend, not a session.
     public let unnamedCount: Int
+    /// Un-nameable roots that ran entirely in the cloud, split out of `unnamedCents`.
+    /// A cloud agent's chat lives on Cursor's servers, so it usually has no local record
+    /// — but "ran in the cloud" is worth saying, where "unnamed" says nothing at all.
+    public let cloudCents: Double
+    public let cloudCount: Int
     public let totalCents: Double
     /// Spend by model across the whole cycle, by cost. Covers every event, including
     /// those in sessions that could not be named.
     public let models: [ModelSpend]
 
     public static let empty = SessionBreakdown(
-        ranked: [], unnamedCents: 0, unnamedCount: 0, totalCents: 0, models: []
+        ranked: [], unnamedCents: 0, unnamedCount: 0,
+        cloudCents: 0, cloudCount: 0, totalCents: 0, models: []
     )
 
     /// Cuts the list to `limit` rows and derives the remainder.
@@ -135,7 +166,11 @@ public struct SessionBreakdown: Equatable {
         return SessionDisplay(
             rows: rows,
             hiddenCount: (ranked.count - rows.count) + unnamedCount,
-            hiddenCents: max(Format.displayedCents(totalCents) - shown, 0)
+            // Cloud spend is drawn as its own row, so the remainder must exclude it or
+            // the column would count it twice.
+            hiddenCents: max(
+                Format.displayedCents(totalCents) - shown - Format.displayedCents(cloudCents), 0
+            )
         )
     }
 
@@ -146,11 +181,13 @@ public struct SessionBreakdown: Equatable {
         var own: [String: Double] = [:]
         var count: [String: Int] = [:]
         var seen: [String: Date] = [:]
+        var cloudOnly: [String: Bool] = [:]
         for e in events {
             guard let id = e.conversationID else { continue }
             own[id, default: 0] += e.cents
             count[id, default: 0] += 1
             seen[id] = max(seen[id] ?? .distantPast, e.timestamp)
+            cloudOnly[id] = (cloudOnly[id] ?? true) && e.isCloud
         }
 
         // A parent may itself have billed nothing, so pull ancestors in from the catalog.
@@ -178,13 +215,18 @@ public struct SessionBreakdown: Equatable {
             // By rolled cost, matching the top level: a subagent that spawned its own
             // should rank on the whole subtree, not just its own requests.
             let kids = (childrenOf[id] ?? []).map(node).sorted { $0.rolledCents > $1.rolledCents }
+            // A chat that billed nothing itself takes its character entirely from what ran
+            // beneath it, so it is vacuously cloud rather than counting as local evidence.
+            let billedHere = own[id] != nil
+            let ownIsCloud = billedHere ? (cloudOnly[id] ?? false) : true
             return SessionNode(
                 id: id,
                 name: catalog[id]?.name,
                 ownCents: own[id] ?? 0,
                 requestCount: count[id] ?? 0,
                 lastActivity: kids.reduce(seen[id] ?? .distantPast) { max($0, $1.lastActivity) },
-                children: kids
+                children: kids,
+                isCloud: (billedHere || !kids.isEmpty) && ownIsCloud && kids.allSatisfy(\.isCloud)
             )
         }
 
@@ -202,10 +244,18 @@ public struct SessionBreakdown: Equatable {
         }
 
         let namedTotal = ranked.reduce(0) { $0 + $1.rolledCents }
+        // Only the un-nameable ones form the cloud bucket. A cloud chat that did sync down
+        // has a name, so it belongs in the ranked list carrying its marker — putting it in
+        // both would double-count it.
+        let anonymous = roots.filter { $0.name == nil }
+        let fromCloud = anonymous.filter(\.isCloud)
+        let cloudCents = fromCloud.reduce(0) { $0 + $1.rolledCents }
         return SessionBreakdown(
             ranked: ranked,
-            unnamedCents: max(total - namedTotal, 0),
-            unnamedCount: roots.filter { $0.name == nil }.count,
+            unnamedCents: max(total - namedTotal - cloudCents, 0),
+            unnamedCount: anonymous.count - fromCloud.count,
+            cloudCents: cloudCents,
+            cloudCount: fromCloud.count,
             totalCents: total,
             models: cycleModels
                 .map { ModelSpend(model: $0.key, cents: $0.value) }

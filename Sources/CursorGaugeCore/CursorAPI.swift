@@ -135,6 +135,12 @@ struct FilteredUsageResponse: Decodable {
         let chargedCents: LooseNumber?
         /// Cursor's composer id — the chat this request belongs to.
         let conversationId: String?
+        /// Set when the request ran with no editor attached — a cloud agent.
+        let isHeadless: Bool?
+        /// Present on cloud agent runs, and used as the `conversationId` too. Captured
+        /// live alongside `isHeadless`; either alone is taken as proof, so the row
+        /// survives Cursor dropping one of them.
+        let cloudAgentId: String?
     }
     let totalUsageEventsCount: Int?
     let usageEventsDisplay: [Event]?
@@ -444,7 +450,8 @@ public final class CursorAPI {
                     conversationID: $0.conversationId,
                     model: $0.model,
                     cents: $0.chargedCents?.value ?? 0,
-                    timestamp: Date(timeIntervalSince1970: $0.timestamp.value / 1000)
+                    timestamp: Date(timeIntervalSince1970: $0.timestamp.value / 1000),
+                    isCloud: ($0.isHeadless ?? false) || $0.cloudAgentId != nil
                 )
             },
             // Only a genuine cap hit counts as truncation. A server that simply reports a
