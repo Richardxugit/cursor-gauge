@@ -17,6 +17,10 @@ struct MenuContent: View {
     @State private var expandedChildren: Set<String> = []
     @State private var showingAllSessions = false
     @State private var showingModels = false
+    /// The report makes its own network call, so it gets its own in-flight flag rather than
+    /// borrowing the store's — a poll and a report can run at once without disabling each other.
+    @State private var isBuildingReport = false
+    @State private var reportError: String?
 
     /// Five keeps the menu a fixed height on a normal cycle; the rest is one click away.
     private static let sessionRowLimit = 5
@@ -43,6 +47,10 @@ struct MenuContent: View {
             if case .failed(let message) = store.status {
                 Divider().padding(.vertical, 8)
                 problem(message)
+            }
+            if let reportError {
+                Divider().padding(.vertical, 8)
+                problem("Report failed — \(reportError)")
             }
             Divider().padding(.vertical, 8)
             actions
@@ -366,6 +374,9 @@ struct MenuContent: View {
             MenuButton(title: "Refresh Now", key: "r", disabled: store.isRefreshing) {
                 Task { await store.refresh() }
             }
+            MenuButton(title: "Usage Report…", key: "e", disabled: isBuildingReport) {
+                buildReport()
+            }
             MenuButton(title: "Settings…", key: ",") {
                 openSettings()
             }
@@ -402,6 +413,27 @@ struct MenuContent: View {
         // settings window opens behind whatever is in front.
         NSApp.activate(ignoringOtherApps: true)
         openSettingsWindow()
+    }
+
+    /// Builds the report off the main actor and hands it to the browser.
+    ///
+    /// It fetches its own snapshot rather than reusing the store's, so the report is never a
+    /// stale reading — and a failure here is reported in the menu instead of being swallowed,
+    /// since a menu item that silently does nothing is worse than one that says why.
+    private func buildReport() {
+        isBuildingReport = true
+        reportError = nil
+        Task {
+            defer { isBuildingReport = false }
+            do {
+                let written = try await ReportCommand.write(to: ReportCommand.defaultDestination())
+                NSWorkspace.shared.open(written)
+            } catch {
+                reportError = (error as? APIError)?.description
+                    ?? (error as? TokenError)?.description
+                    ?? error.localizedDescription
+            }
+        }
     }
 }
 

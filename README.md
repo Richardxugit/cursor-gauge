@@ -236,6 +236,59 @@ percentage is a weak signal. Pace mode goes amber when spending outruns the cale
 40% of budget on day 10 of 31 — regardless of how low the percentage is. The thin
 vertical marker on the progress bar is where the calendar says you should be.
 
+## Reports
+
+The menu answers *how much have I spent?* A report answers *what did I spend it on?*
+
+```sh
+CursorGauge --report                 # writes to a temp file and opens it
+CursorGauge --report ~/usage.html    # or a path you choose
+```
+
+Or **Usage Report…** (⌘E) in the menu. Either way you get one self-contained HTML file —
+no scripts, no web fonts, nothing fetched — that opens offline and survives being emailed.
+
+**What makes it worth having** is that it joins two sources the app already reads:
+
+| | Billing API | Cursor's local database |
+|---|---|---|
+| Has | cents, models, tokens, per conversation | prompts, tool calls, repos, lines changed |
+| Lacks | any activity detail | any cost |
+
+Neither can tell you which repo is consuming your $200. Joined on the conversation id,
+they can:
+
+```
+Where the money went
+  ko-ui-lib        $30.23    25 chats · 1,169 tool calls · 88 prompts
+  ko-tests         $22.43    21 chats · 1,215 tool calls · 91 prompts
+  ko-services       $7.52    13 chats ·   336 tool calls · 26 prompts
+  Cloud agents      $0.54    1 chat with no local record
+  Unattributed      $5.93    billed work whose chat isn't in the local store
+```
+
+Also: spend by model, cost and effort per day, your chats ranked with the tool counts
+behind them, which tools ran and how often they failed, what file types were touched, and
+how you asked — prompt count, typical length, and your `/ko-feature`-style commands ranked.
+
+**Three things it is careful about:**
+
+- **Both halves cover the same window.** Activity is filtered to the billing cycle, so six
+  months of tool counts can't sit beside one cycle of spend and imply a rate.
+- **Nothing is filed under a repo it didn't come from.** Spend that can't be traced goes to
+  one of three named buckets — cloud agents, unattributed, or free of charge — and the
+  footer states whether the buckets add up to the cycle total. If they don't, it says so
+  rather than quietly rounding.
+- **It reads statistics, not content.** Prompt *lengths* and *counts*, never prompt text;
+  file *paths*, never file contents. Verified against a live report: none of 42 real prompt
+  openings appear in the output.
+
+Chat titles and repository names *do* appear — a title can carry a ticket number, so treat
+the file the way you'd treat your branch names. The page says this on its own face.
+
+If Cursor's database can't be read, the report still renders the cost half and states that
+the rest is missing, rather than showing empty sections.
+
 ## How it refreshes
 
 There's no push API, so it polls adaptively:
@@ -319,7 +372,13 @@ else's details are discarded at the parse boundary and never stored, logged or d
 
 Session names are read from Cursor's own store on this Mac and rendered only in your own
 menu. They are never sent anywhere. Note they *are* your chat titles, so they can carry
-ticket numbers — worth knowing before screen-sharing.
+ticket numbers — worth knowing before screen-sharing, and before sharing a report file.
+
+Everything read from Cursor's local database goes through SQLite **read-only** (`mode=ro`),
+so Cursor's own write-ahead log is never disturbed. Reports aggregate *inside* the database
+and pull back only totals: prompt lengths but never prompt text, file paths but never file
+contents. That is a deliberate boundary — a single `edit_file_v2` parameter holds an entire
+file body, and it stays where it is.
 
 The app holds no secret of its own. It reads `cursorAuth/accessToken` **read-only** from
 Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
@@ -327,8 +386,9 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 99 tests, no network and no database
+swift test                                   # 151 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
+swift run CursorGauge --report out.html      # build the usage report
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
 ./build.sh                                   # universal .app in ./build

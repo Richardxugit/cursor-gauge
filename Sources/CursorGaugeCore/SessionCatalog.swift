@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 
 /// Looks up chat names and subagent parentage in Cursor's local store.
 ///
@@ -75,21 +74,7 @@ public final class SessionCatalog {
     // MARK: - SQLite
 
     private func fetch(_ ids: [String]) -> [String: SessionRecord] {
-        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return [:] }
-
-        var uri = URLComponents()
-        uri.scheme = "file"
-        uri.path = databaseURL.path
-        uri.queryItems = [URLQueryItem(name: "mode", value: "ro")]
-        guard let uriString = uri.string else { return [:] }
-
-        var handle: OpaquePointer?
-        guard sqlite3_open_v2(uriString, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK,
-              let handle else {
-            if handle != nil { sqlite3_close_v2(handle) }
-            return [:]
-        }
-        defer { sqlite3_close_v2(handle) }
+        guard let database = ReadOnlyDatabase(url: databaseURL) else { return [:] }
 
         var found: [String: SessionRecord] = [:]
         for chunk in stride(from: 0, to: ids.count, by: Self.batchSize).map({
@@ -98,28 +83,14 @@ public final class SessionCatalog {
             // json_extract runs inside SQLite, so only the two short strings cross into
             // Swift rather than the whole row.
             let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
-            let sql = """
+            database.query("""
                 SELECT composerId,
                        json_extract(value, '$.name'),
                        json_extract(value, '$.subagentInfo.parentComposerId')
                 FROM composerHeaders WHERE composerId IN (\(placeholders))
-                """
-
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { continue }
-            defer { sqlite3_finalize(statement) }
-
-            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            for (index, id) in chunk.enumerated() {
-                sqlite3_bind_text(statement, Int32(index + 1), id, -1, transient)
-            }
-
-            while sqlite3_step(statement) == SQLITE_ROW {
-                guard let idBytes = sqlite3_column_text(statement, 0) else { continue }
-                func text(_ column: Int32) -> String? {
-                    sqlite3_column_text(statement, column).map { String(cString: $0) }
-                }
-                found[String(cString: idBytes)] = SessionRecord(name: text(1), parentID: text(2))
+                """, chunk) { row in
+                guard let id = row.text(0) else { return }
+                found[id] = SessionRecord(name: row.text(1), parentID: row.text(2))
             }
         }
         return found

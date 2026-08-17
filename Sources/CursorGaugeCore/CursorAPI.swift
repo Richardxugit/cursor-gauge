@@ -189,15 +189,23 @@ public struct UsageSnapshot: Equatable {
     public let sessions: SessionBreakdown
     /// The page cap was reached, so the sessions list covers only part of the cycle.
     public let sessionsTruncated: Bool
+    /// The individual billed requests behind `sessions`.
+    ///
+    /// The menu never reads these — it wants the rolled-up tree. The report does: joining
+    /// spend to a repo needs the cost of every conversation, and `sessions` deliberately
+    /// folds the ones it could not name into a single total, losing their ids.
+    public let events: [SessionEvent]
 
     public init(
         settledSpendCents: Double, liveSpendCents: Double, limitDollars: Double?,
         cycleStart: Date, cycleEnd: Date, todayCents: Double,
         models: [ModelUsage], lastActivity: Date?, capturedAt: Date,
-        sessions: SessionBreakdown = .empty, sessionsTruncated: Bool = false
+        sessions: SessionBreakdown = .empty, sessionsTruncated: Bool = false,
+        events: [SessionEvent] = []
     ) {
         self.sessions = sessions
         self.sessionsTruncated = sessionsTruncated
+        self.events = events
         self.settledSpendCents = settledSpendCents
         self.liveSpendCents = liveSpendCents
         self.limitDollars = limitDollars
@@ -380,7 +388,8 @@ public final class CursorAPI {
             lastActivity: feed.events.map(\.timestamp).max(),
             capturedAt: now,
             sessions: sessions,
-            sessionsTruncated: feed.truncated
+            sessionsTruncated: feed.truncated,
+            events: feed.events
         )
     }
 

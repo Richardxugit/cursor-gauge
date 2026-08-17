@@ -9,6 +9,11 @@ enum Entry {
         if arguments.contains("--dry-run") {
             DryRun.run()
         }
+        if let index = arguments.firstIndex(of: "--report") {
+            // The path is optional, and a following flag is not one.
+            let next = index + 1 < arguments.count ? arguments[index + 1] : nil
+            ReportCommand.run(path: next?.hasPrefix("-") == false ? next : nil)
+        }
         if let index = arguments.firstIndex(of: "--emit-iconset"), index + 1 < arguments.count {
             IconGenerator.run(directory: arguments[index + 1])
         }
