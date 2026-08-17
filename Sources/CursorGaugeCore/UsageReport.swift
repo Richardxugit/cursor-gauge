@@ -28,6 +28,17 @@ public struct SessionLine: Equatable, Identifiable {
     public let isCloud: Bool
 }
 
+/// What one conversation cost, flat.
+public struct ConversationCost: Equatable, Identifiable {
+    public let id: String
+    public let name: String?
+    /// This chat's own requests only — subagents are their own entries here, unlike in
+    /// `SessionLine`, so the ledger sums to the cycle without double counting.
+    public let cents: Double
+    public let requests: Int
+    public let isCloud: Bool
+}
+
 /// A day of the cycle, with both halves on it.
 public struct DayLine: Equatable, Identifiable {
     public let day: Date
@@ -69,6 +80,9 @@ public struct UsageReport {
     public let totalCents: Double
     public let models: [ModelSpend]
     public let sessions: [SessionLine]
+    /// Every conversation that billed, flat and unrolled — including those `sessions` folds
+    /// into a total because they had no local name. Ranked by cost.
+    public let ledger: [ConversationCost]
     public let tools: [ToolUsage]
     public let prompts: PromptStats
     public let files: [FileTypeUsage]
@@ -164,6 +178,31 @@ public struct UsageReport {
             )
         }
 
+        // MARK: The flat ledger
+        //
+        // Costs per conversation without rolling subagents up, so the entries sum to the
+        // cycle exactly once. Names are pulled from the tree the menu already built.
+        var perConversation: [String: (cents: Double, requests: Int, cloud: Bool)] = [:]
+        for event in events {
+            guard let id = event.conversationID else { continue }
+            var entry = perConversation[id] ?? (0, 0, true)
+            entry.cents += event.cents
+            entry.requests += 1
+            entry.cloud = entry.cloud && event.isCloud
+            perConversation[id] = entry
+        }
+        var names: [String: String] = [:]
+        func indexNames(_ node: SessionNode) {
+            if let name = node.name { names[node.id] = name }
+            node.children.forEach(indexNames)
+        }
+        snapshot.sessions.ranked.forEach(indexNames)
+
+        let ledger = perConversation.map { id, entry in
+            ConversationCost(id: id, name: names[id], cents: entry.cents,
+                             requests: entry.requests, isCloud: entry.cloud)
+        }.sorted { ($0.cents, $1.id) > ($1.cents, $0.id) }
+
         // MARK: Unbilled work
         //
         // Chats that did something in the window and cost nothing. Counted, never costed:
@@ -209,6 +248,7 @@ public struct UsageReport {
             // `auto-smart` arrive as one **Auto** row.
             models: snapshot.sessions.models,
             sessions: sessions,
+            ledger: ledger,
             tools: activity.tools,
             prompts: activity.prompts,
             files: activity.files,

@@ -289,6 +289,50 @@ the file the way you'd treat your branch names. The page says this on its own fa
 If Cursor's database can't be read, the report still renders the cost half and states that
 the rest is missing, rather than showing empty sections.
 
+### JSON, for charts this report doesn't draw
+
+```sh
+CursorGauge --report out.json --json                  # facts only
+CursorGauge --report out.json --json --with-prompts   # …plus the prompt text
+```
+
+The HTML answers the questions it was designed around. The JSON is for the ones it wasn't —
+hand it to a model or a notebook and ask for whatever cut you want.
+
+It exports **facts, not judgements**: which tools ran in each chat, which file types it
+touched, how long its prompts were, what it cost. Never a label like *"this was a bug fix"*.
+Those classifications are worth making, but baking one taxonomy in here would discard the
+evidence behind it — a consumer can derive its own and show its work; it cannot un-derive
+someone else's.
+
+Per conversation you get id, title, repo, mode, cost, requests, prompt count, prompt
+lengths, tool-name→count, extension→count, lines added/removed, files changed, first/last
+activity, and whether it ran in the cloud. Plus the cycle, the residual buckets, and daily
+series.
+
+That's enough to derive most of what a work-analytics dashboard shows **without reading a
+prompt**. On one real cycle, from behaviour alone:
+
+| Axis | Derived from |
+|---|---|
+| Intent (Ask / Write Code / Plan / Automation) | which tools ran — edits vs reads vs planning tools |
+| Task complexity | tool calls, prompt count, files changed |
+| Categories (Documentation / Testing / Feature) | file extensions touched |
+| Prompt specificity | median prompt length |
+
+Work type (KTLO / Feature / Bug) is the exception — it genuinely needs the text, because
+slash commands classify only ~10% of prompts. That's what `--with-prompts` is for.
+
+**`--with-prompts` sends nothing anywhere** — it only widens what the local file contains.
+But that file then holds everything you typed, which on a work account means client code
+and ticket detail. It's off by default for that reason, and the export states
+`includesPromptText` so a consumer never has to guess whether an empty field means "none"
+or "not collected".
+
+Every total reconciles four ways — conversations, repositories plus residuals, the daily
+series, and the cycle total all agree to the cent — and `attribution.reconciles` says so
+explicitly, so a consumer can refuse to chart a breakdown that doesn't add up.
+
 ## How it refreshes
 
 There's no push API, so it polls adaptively:
@@ -386,9 +430,10 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 151 tests, no network and no database
+swift test                                   # 167 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --report out.html      # build the usage report
+swift run CursorGauge --report out.json --json   # …as data instead
 swift run CursorGauge --emit-preview out.png # render every menu bar state
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
 ./build.sh                                   # universal .app in ./build

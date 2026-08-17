@@ -284,6 +284,61 @@ final class ActivityCatalogTests: XCTestCase {
         XCTAssertEqual(byConversation["c2"]?.workspace, "ko-ui-lib")
     }
 
+    /// The per-chat breakdowns are the evidence a consumer classifies work from, so they
+    /// have to survive alongside the cycle-wide ranking rather than being folded into it.
+    func testEachConversationCarriesItsOwnToolAndFileBreakdown() throws {
+        try makeDatabase(bubbles: [
+            toolBubble(conversation: "docs", tool: "edit_file_v2",
+                       params: #"{"relativeWorkspacePath":"/repo/README.md"}"#),
+            toolBubble(conversation: "docs", tool: "read_file_v2",
+                       params: #"{"targetFile":"/repo/guide.md"}"#),
+            toolBubble(conversation: "code", tool: "edit_file_v2",
+                       params: #"{"relativeWorkspacePath":"/repo/app.ts"}"#),
+            toolBubble(conversation: "code", tool: "run_terminal_command_v2"),
+        ])
+        let result = digest().byConversation
+        XCTAssertEqual(result["docs"]?.fileTypes, [".md": 2])
+        XCTAssertEqual(result["code"]?.fileTypes, [".ts": 1])
+        XCTAssertEqual(result["code"]?.tools,
+                       ["edit_file_v2": 1, "run_terminal_command_v2": 1])
+        XCTAssertEqual(result["docs"]?.tools, ["edit_file_v2": 1, "read_file_v2": 1])
+        // The cycle-wide ranking still sees everything.
+        XCTAssertEqual(digest().files.map(\.ext), [".md", ".ts"])
+    }
+
+    func testConversationActivityCarriesItsBoundsAndPromptLengths() throws {
+        try makeDatabase(bubbles: [
+            promptBubble(conversation: "c1", text: "hello", at: "2026-08-03T09:00:00.000Z"),
+            promptBubble(conversation: "c1", text: "a longer follow-up", at: "2026-08-04T09:00:00.000Z"),
+            toolBubble(conversation: "c1", tool: "read_file_v2", at: "2026-08-05T09:00:00.000Z"),
+        ])
+        let record = try XCTUnwrap(digest().byConversation["c1"])
+        XCTAssertEqual(record.promptLengths, [5, 18], "in the order written")
+        XCTAssertEqual(record.firstActivity, ISO8601DateFormatter().date(from: "2026-08-03T09:00:00Z"))
+        XCTAssertEqual(record.lastActivity, ISO8601DateFormatter().date(from: "2026-08-05T09:00:00Z"))
+    }
+
+    // MARK: - Prompt text is a separate, deliberate call
+
+    func testPromptTextIsNotInTheDigestAtAll() throws {
+        try makeDatabase(bubbles: [promptBubble(conversation: "c1", text: "SECRET PROMPT")])
+        XCTAssertFalse("\(digest())".contains("SECRET PROMPT"),
+                       "the digest promises statistics, not content")
+    }
+
+    func testPromptTextIsReturnedWhenAskedForByName() throws {
+        try makeDatabase(bubbles: [
+            promptBubble(conversation: "c1", text: "first", at: "2026-08-03T09:00:00.000Z"),
+            promptBubble(conversation: "c1", text: "second", at: "2026-08-04T09:00:00.000Z"),
+            promptBubble(conversation: "c2", text: "other"),
+            promptBubble(conversation: "c1", text: "too early", at: "2026-07-01T09:00:00.000Z"),
+        ])
+        let text = ActivityCatalog(databaseURL: databaseURL, timeZone: TimeZone(secondsFromGMT: 0)!)
+            .promptText(since: cycleStart)
+        XCTAssertEqual(text["c1"], ["first", "second"], "in order, and only inside the window")
+        XCTAssertEqual(text["c2"], ["other"])
+    }
+
     func testAConversationWithNoHeaderStillReportsItsActivity() throws {
         // Cloud agents bill against a conversation that has no local row at all.
         try makeDatabase(bubbles: [toolBubble(conversation: "orphan", tool: "read_file_v2")])

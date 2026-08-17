@@ -102,12 +102,32 @@ public struct ConversationActivity: Equatable {
     public let linesAdded: Int
     public let linesRemoved: Int
     public let filesChanged: Int
+    /// Which tools ran here, and how often.
+    ///
+    /// Carried per conversation rather than only in the global ranking because it is the
+    /// evidence behind what a chat *was*: one that edited files did different work from one
+    /// that only read them. Exported raw so a consumer can draw its own conclusions instead
+    /// of inheriting a taxonomy invented here.
+    public let tools: [String: Int]
+    /// Bounds of this chat's activity inside the window, for anything time-based.
+    public let firstActivity: Date?
+    public let lastActivity: Date?
+    /// Lengths of the prompts written here, in order. Lengths only — never the text.
+    public let promptLengths: [Int]
+    /// Extension to operation count for the files this chat touched. Alongside `tools`, this
+    /// is what lets a consumer tell documentation work from test work without reading a word
+    /// of the prompts.
+    public let fileTypes: [String: Int]
 
     public init(
         workspace: String? = nil, workspacePath: String? = nil, mode: String? = nil,
         prompts: Int = 0, toolCalls: Int = 0,
-        linesAdded: Int = 0, linesRemoved: Int = 0, filesChanged: Int = 0
+        linesAdded: Int = 0, linesRemoved: Int = 0, filesChanged: Int = 0,
+        tools: [String: Int] = [:],
+        firstActivity: Date? = nil, lastActivity: Date? = nil,
+        promptLengths: [Int] = [], fileTypes: [String: Int] = [:]
     ) {
+        self.fileTypes = fileTypes
         self.workspace = workspace
         self.workspacePath = workspacePath
         self.mode = mode
@@ -116,6 +136,10 @@ public struct ConversationActivity: Equatable {
         self.linesAdded = linesAdded
         self.linesRemoved = linesRemoved
         self.filesChanged = filesChanged
+        self.tools = tools
+        self.firstActivity = firstActivity
+        self.lastActivity = lastActivity
+        self.promptLengths = promptLengths
     }
 }
 
@@ -207,11 +231,12 @@ public final class ActivityCatalog {
         // genuinely quiet window keeps a renamed table from reading as "you did no work".
         guard let tools = tools(database, since: start) else { return .empty }
 
+        let files = files(database, since: start)
         return ActivityDigest(
             tools: tools,
             prompts: prompts(database, since: start),
-            files: files(database, since: start),
-            byConversation: conversations(database, since: start),
+            files: files.overall,
+            byConversation: conversations(database, since: start, fileTypes: files.perConversation),
             daily: daily(database, since: start)
         )
     }
@@ -284,22 +309,28 @@ public final class ActivityCatalog {
         )
     }
 
-    private func files(_ database: ReadOnlyDatabase, since: String) -> [FileTypeUsage] {
-        // The path lives inside `params`, which Cursor stores as a JSON *string* — hence the
-        // second `json_extract`. Tools disagree on the key, and `rawArgs` carries it for the
-        // older shapes, so all three are tried. Grouping happens here so that
-        // `params.streamingContent`, which holds whole file bodies, never leaves SQLite.
+    /// Returns the cycle-wide ranking and, separately, the same figures per conversation.
+    ///
+    /// The path lives inside `params`, which Cursor stores as a JSON *string* — hence the
+    /// second `json_extract`. Tools disagree on the key, so both are tried. Grouping happens
+    /// inside SQLite so that `params.streamingContent`, which holds whole file bodies, never
+    /// leaves the database; only extensions and counts come back.
+    private func files(
+        _ database: ReadOnlyDatabase, since: String
+    ) -> (overall: [FileTypeUsage], perConversation: [String: [String: Int]]) {
         var reads: [String: Int] = [:]
         var edits: [String: Int] = [:]
+        var perConversation: [String: [String: Int]] = [:]
         database.query("""
-            SELECT tool, path, count(*) FROM (
-                SELECT tool,
+            SELECT conversation, tool, path, count(*) FROM (
+                SELECT conversation, tool,
                        CASE WHEN json_valid(params)
                             THEN coalesce(json_extract(params, '$.relativeWorkspacePath'),
                                           json_extract(params, '$.targetFile'))
                        END AS path
                 FROM (
-                    SELECT json_extract(value, '$.toolFormerData.name') AS tool,
+                    SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
+                           json_extract(value, '$.toolFormerData.name') AS tool,
                            json_extract(value, '$.toolFormerData.params') AS params
                     FROM cursorDiskKV
                     WHERE \(Self.bubblesInWindow)
@@ -307,33 +338,42 @@ public final class ActivityCatalog {
                 )
             )
             WHERE path IS NOT NULL
-            GROUP BY tool, path
+            GROUP BY conversation, tool, path
             """, [since]) { row in
-            guard let tool = row.text(0), let path = row.text(1) else { return }
+            guard let tool = row.text(1), let path = row.text(2) else { return }
             let ext = Self.extension(of: path)
+            let count = row.int(3)
             if Self.changesFiles(tool) {
-                edits[ext, default: 0] += row.int(2)
+                edits[ext, default: 0] += count
             } else {
-                reads[ext, default: 0] += row.int(2)
+                reads[ext, default: 0] += count
+            }
+            if let id = row.text(0), !id.isEmpty {
+                perConversation[id, default: [:]][ext, default: 0] += count
             }
         }
 
-        return Set(reads.keys).union(edits.keys)
+        let overall = Set(reads.keys).union(edits.keys)
             .map { FileTypeUsage(ext: $0, reads: reads[$0] ?? 0, edits: edits[$0] ?? 0) }
             .sorted { ($0.operations, $1.ext) > ($1.operations, $0.ext) }
+        return (overall, perConversation)
     }
 
     private func conversations(
-        _ database: ReadOnlyDatabase, since: String
+        _ database: ReadOnlyDatabase, since: String, fileTypes: [String: [String: Int]]
     ) -> [String: ConversationActivity] {
         // `bubbleId:<composerId>:<bubbleId>` — take the middle field. "bubbleId:" is nine
         // characters, so the id starts at ten.
         var prompts: [String: Int] = [:]
         var toolCalls: [String: Int] = [:]
+        var first: [String: Date] = [:]
+        var last: [String: Date] = [:]
         database.query("""
             SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
                    sum(\(Self.isPrompt)),
-                   sum(json_extract(value, '$.toolFormerData.name') IS NOT NULL)
+                   sum(json_extract(value, '$.toolFormerData.name') IS NOT NULL),
+                   min(json_extract(value, '$.createdAt')),
+                   max(json_extract(value, '$.createdAt'))
             FROM cursorDiskKV
             WHERE \(Self.bubblesInWindow)
             GROUP BY conversation
@@ -341,6 +381,38 @@ public final class ActivityCatalog {
             guard let id = row.text(0), !id.isEmpty else { return }
             prompts[id] = row.int(1)
             toolCalls[id] = row.int(2)
+            first[id] = row.text(3).flatMap(Self.boundary.date(from:))
+            last[id] = row.text(4).flatMap(Self.boundary.date(from:))
+        }
+
+        // Which tools ran in which chat. One row per (chat, tool) pair rather than per call,
+        // so the volume that crosses into Swift stays in the hundreds.
+        var toolsPerConversation: [String: [String: Int]] = [:]
+        database.query("""
+            SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
+                   json_extract(value, '$.toolFormerData.name') AS tool,
+                   count(*)
+            FROM cursorDiskKV
+            WHERE \(Self.bubblesInWindow)
+              AND json_extract(value, '$.toolFormerData.name') IS NOT NULL
+            GROUP BY conversation, tool
+            """, [since]) { row in
+            guard let id = row.text(0), !id.isEmpty, let tool = row.text(1) else { return }
+            toolsPerConversation[id, default: [:]][tool] = row.int(2)
+        }
+
+        // Prompt *lengths* per chat. The text stays in the database; see `promptText(since:)`
+        // for the one path that reads it, which nothing calls unless explicitly asked.
+        var lengths: [String: [Int]] = [:]
+        database.query("""
+            SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
+                   length(json_extract(value, '$.text'))
+            FROM cursorDiskKV
+            WHERE \(Self.bubblesInWindow) AND \(Self.isPrompt)
+            ORDER BY json_extract(value, '$.createdAt')
+            """, [since]) { row in
+            guard let id = row.text(0), !id.isEmpty else { return }
+            lengths[id, default: []].append(row.int(1))
         }
 
         // The header table is 300-odd rows on a working account, so it is read whole rather
@@ -373,9 +445,36 @@ public final class ActivityCatalog {
                 toolCalls: toolCalls[id] ?? 0,
                 linesAdded: header?.2 ?? 0,
                 linesRemoved: header?.3 ?? 0,
-                filesChanged: header?.4 ?? 0
+                filesChanged: header?.4 ?? 0,
+                tools: toolsPerConversation[id] ?? [:],
+                firstActivity: first[id],
+                lastActivity: last[id],
+                promptLengths: lengths[id] ?? [],
+                fileTypes: fileTypes[id] ?? [:]
             )
         }
+    }
+
+    /// The prompts themselves, by conversation.
+    ///
+    /// Deliberately a separate call rather than a field on `ActivityDigest`: the digest
+    /// promises to carry statistics and not content, and that promise is only worth
+    /// something if reading the text requires asking for it by name. Nothing in the app
+    /// calls this — only an export the user has explicitly opted into.
+    public func promptText(since: Date) -> [String: [String]] {
+        guard let database = ReadOnlyDatabase(url: databaseURL) else { return [:] }
+        var found: [String: [String]] = [:]
+        database.query("""
+            SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
+                   json_extract(value, '$.text')
+            FROM cursorDiskKV
+            WHERE \(Self.bubblesInWindow) AND \(Self.isPrompt)
+            ORDER BY json_extract(value, '$.createdAt')
+            """, [Self.boundary.string(from: since)]) { row in
+            guard let id = row.text(0), !id.isEmpty, let text = row.text(1) else { return }
+            found[id, default: []].append(text)
+        }
+        return found
     }
 
     private func daily(_ database: ReadOnlyDatabase, since: String) -> [DayActivity] {
