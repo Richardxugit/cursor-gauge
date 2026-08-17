@@ -435,6 +435,7 @@ swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --report out.html      # build the usage report
 swift run CursorGauge --report out.json --json   # …as data instead
 swift run CursorGauge --emit-preview out.png # render every menu bar state
+swift run CursorGauge --emit-menu-preview out.png  # render the menu's action rows
 swift run CursorGauge --design-lab out.png    # compare candidate gauge shapes
 ./build.sh                                   # universal .app in ./build
 ./build.sh --install                         # …and replace /Applications/CursorGauge.app

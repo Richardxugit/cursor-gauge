@@ -23,6 +23,9 @@ enum Entry {
         if let index = arguments.firstIndex(of: "--emit-preview"), index + 1 < arguments.count {
             PreviewRenderer.run(path: arguments[index + 1])
         }
+        if let index = arguments.firstIndex(of: "--emit-menu-preview"), index + 1 < arguments.count {
+            MenuPreview.run(path: arguments[index + 1])
+        }
         if let index = arguments.firstIndex(of: "--design-lab"), index + 1 < arguments.count {
             DesignLab.run(path: arguments[index + 1])
         }

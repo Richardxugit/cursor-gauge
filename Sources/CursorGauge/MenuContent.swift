@@ -374,7 +374,13 @@ struct MenuContent: View {
             MenuButton(title: "Refresh Now", key: "r", disabled: store.isRefreshing) {
                 Task { await store.refresh() }
             }
-            MenuButton(title: "Usage Report…", key: "e", disabled: isBuildingReport) {
+            // The report makes its own network call and scans the local store, so it takes a
+            // few seconds. The title changes too: a spinner says "something is happening",
+            // the wording says what.
+            MenuButton(
+                title: isBuildingReport ? "Building report…" : "Usage Report…",
+                key: "e", busy: isBuildingReport
+            ) {
                 buildReport()
             }
             MenuButton(title: "Settings…", key: ",") {
@@ -421,6 +427,9 @@ struct MenuContent: View {
     /// stale reading — and a failure here is reported in the menu instead of being swallowed,
     /// since a menu item that silently does nothing is worse than one that says why.
     private func buildReport() {
+        // Hit testing stops a second click, but ⌘E bypasses that, so re-entry is refused
+        // here rather than relying on the view to be the only guard.
+        guard !isBuildingReport else { return }
         isBuildingReport = true
         reportError = nil
         Task {
@@ -453,12 +462,19 @@ private struct OptionalShortcut: ViewModifier {
 
 /// A row that looks and behaves like a menu item inside a window-style menu bar extra,
 /// which otherwise gives plain SwiftUI buttons with no hover feedback.
-private struct MenuButton: View {
+/// Not private, so `--emit-menu-preview` can render it. The menu bar can't be screenshotted
+/// from a terminal, and the busy state is exactly the kind of thing that compiles and still
+/// looks wrong.
+struct MenuButton: View {
     let title: String
     /// The command-key equivalent. The displayed shortcut is derived from this, so the
     /// label can't drift out of sync with what the key actually does.
     var key: KeyEquivalent? = nil
     var disabled: Bool = false
+    /// Work is under way: show a spinner and refuse further clicks, but stay at full
+    /// opacity. Dimming is how this row says "unavailable"; a dimmed row with no spinner is
+    /// exactly what made the report button look stuck rather than busy.
+    var busy: Bool = false
     let action: () -> Void
 
     @State private var isHovering = false
@@ -472,9 +488,18 @@ private struct MenuButton: View {
             HStack {
                 Text(title)
                 Spacer()
-                if let shortcutLabel {
-                    Text(shortcutLabel).foregroundStyle(.tertiary)
+                // One fixed-height slot for both states, so the row cannot change height
+                // when the spinner replaces the shortcut and shift the menu under the cursor.
+                ZStack {
+                    if busy {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.6)
+                    } else if let shortcutLabel {
+                        Text(shortcutLabel).foregroundStyle(.tertiary)
+                    }
                 }
+                .frame(width: 22, height: 14)
             }
             .font(.system(size: 13))
             .padding(.horizontal, 8)
@@ -487,7 +512,11 @@ private struct MenuButton: View {
             .foregroundStyle(isHovering && !disabled ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
         }
         .buttonStyle(.plain)
+        // `disabled` only for genuinely unavailable, because SwiftUI dims a disabled label
+        // itself — which is what made a busy row indistinguishable from a dead one. Busy
+        // refuses the click through hit testing instead and keeps its text at full strength.
         .disabled(disabled)
+        .allowsHitTesting(!busy)
         .opacity(disabled ? 0.5 : 1)
         .onHover { isHovering = $0 }
         .modifier(OptionalShortcut(key: key))
