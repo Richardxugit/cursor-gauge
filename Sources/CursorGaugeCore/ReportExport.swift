@@ -110,8 +110,11 @@ public struct ReportExport: Encodable {
         /// for cloud agents.
         public let name: String?
         public let workspace: String?
-        /// `agent`, `chat` or `debug`.
+        /// `agent`, `chat` or `debug` in the editor; `cli` for a terminal agent.
         public let mode: String?
+        /// Which front end ran this: `gui` (the editor) or `cli` (`cursor-agent`). The two
+        /// use different tool names for comparable work, so never pool them without checking.
+        public let source: ActivitySource
         public let cents: Double
         public let requests: Int
         /// True when every billed request here ran without an editor attached.
@@ -162,6 +165,7 @@ public struct ReportExport: Encodable {
                 name: cost?.name,
                 workspace: record?.workspace,
                 mode: record?.mode,
+                source: record?.source ?? .gui,
                 cents: cost?.cents ?? 0,
                 requests: cost?.requests ?? 0,
                 isCloud: cost?.isCloud ?? false,

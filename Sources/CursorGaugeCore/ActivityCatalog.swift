@@ -2,6 +2,18 @@ import Foundation
 
 // MARK: - What a window of local activity looks like
 
+/// Which of Cursor's two front ends did the work.
+///
+/// They are genuinely different tools with different vocabularies — the editor calls it
+/// `read_file_v2`, the CLI calls it `Read` — so the source travels with the data rather
+/// than being normalised away into a single fake taxonomy.
+public enum ActivitySource: String, Equatable, Codable, Sendable, CaseIterable {
+    /// Cursor the editor, recorded in `state.vscdb`.
+    case gui
+    /// `cursor-agent` in a terminal, recorded under `~/.cursor/chats`.
+    case cli
+}
+
 /// One tool, and how it fared.
 public struct ToolUsage: Equatable, Identifiable {
     /// Cursor's own name, kept verbatim — `read_file_v2`, `mcp-atlassian-getJiraIssue`.
@@ -12,26 +24,30 @@ public struct ToolUsage: Equatable, Identifiable {
     /// Edits the user turned down. Only the file-changing tools can produce these.
     public let rejected: Int
 
+    /// The MCP server this tool came from, or `nil` for one of Cursor's built-ins.
+    ///
+    /// The editor encodes it in the name (`mcp-<server>-<tool>`) and it is derived from
+    /// there; the CLI passes it as a separate argument and supplies it directly. Read it as
+    /// "which integration", not as a guarantee about the server's identity — a couple of
+    /// Cursor's own bridges are named `mcp-extension-…` and `mcp-cursor-ide-…`.
+    public let server: String?
     public var id: String { name }
 
-    public init(name: String, calls: Int, errors: Int = 0, cancelled: Int = 0, rejected: Int = 0) {
+    public init(
+        name: String, calls: Int, errors: Int = 0, cancelled: Int = 0, rejected: Int = 0,
+        server: String? = nil
+    ) {
         self.name = name
         self.calls = calls
         self.errors = errors
         self.cancelled = cancelled
         self.rejected = rejected
+        self.server = server ?? Self.mcpServer(in: name)
     }
 
-    /// The MCP server this tool came from, or `nil` for one of Cursor's built-ins.
-    ///
-    /// Cursor names MCP tools `mcp-<server>-<tool>`, so this is the first segment. The
-    /// convention is not airtight — a couple of Cursor's own bridges are named
-    /// `mcp-extension-…` and `mcp-cursor-ide-…` — so read this as "which integration",
-    /// not as a guarantee about the server's identity.
-    public var server: String? {
+    private static func mcpServer(in name: String) -> String? {
         guard name.hasPrefix("mcp-") else { return nil }
-        let rest = name.dropFirst("mcp-".count)
-        let segment = rest.prefix { $0 != "-" }
+        let segment = name.dropFirst("mcp-".count).prefix { $0 != "-" }
         return segment.isEmpty ? nil : String(segment)
     }
 }
@@ -118,6 +134,8 @@ public struct ConversationActivity: Equatable {
     /// is what lets a consumer tell documentation work from test work without reading a word
     /// of the prompts.
     public let fileTypes: [String: Int]
+    /// Which front end ran this chat.
+    public let source: ActivitySource
 
     public init(
         workspace: String? = nil, workspacePath: String? = nil, mode: String? = nil,
@@ -125,9 +143,11 @@ public struct ConversationActivity: Equatable {
         linesAdded: Int = 0, linesRemoved: Int = 0, filesChanged: Int = 0,
         tools: [String: Int] = [:],
         firstActivity: Date? = nil, lastActivity: Date? = nil,
-        promptLengths: [Int] = [], fileTypes: [String: Int] = [:]
+        promptLengths: [Int] = [], fileTypes: [String: Int] = [:],
+        source: ActivitySource = .gui
     ) {
         self.fileTypes = fileTypes
+        self.source = source
         self.workspace = workspace
         self.workspacePath = workspacePath
         self.mode = mode
@@ -179,6 +199,70 @@ public struct ActivityDigest: Equatable {
     )
 
     public var isEmpty: Bool { self == .empty }
+
+    /// Combines two front ends' records into one window.
+    ///
+    /// Conversation ids do not collide — the editor's are composer ids, the CLI's are agent
+    /// ids — so the lookup is a union. Tool names are summed **by name without translation**:
+    /// the editor's `read_file_v2` and the CLI's `Read` do comparable work, but claiming they
+    /// are the same tool would invent an equivalence this code cannot verify. Each entry
+    /// carries its `source`, so a reader can separate them.
+    public func merging(_ other: ActivityDigest) -> ActivityDigest {
+        var toolCalls: [String: ToolUsage] = [:]
+        for tool in tools + other.tools {
+            if let existing = toolCalls[tool.name] {
+                toolCalls[tool.name] = ToolUsage(
+                    name: tool.name,
+                    calls: existing.calls + tool.calls,
+                    errors: existing.errors + tool.errors,
+                    cancelled: existing.cancelled + tool.cancelled,
+                    rejected: existing.rejected + tool.rejected,
+                    server: existing.server ?? tool.server
+                )
+            } else {
+                toolCalls[tool.name] = tool
+            }
+        }
+
+        var fileTypes: [String: FileTypeUsage] = [:]
+        for file in files + other.files {
+            let existing = fileTypes[file.ext]
+            fileTypes[file.ext] = FileTypeUsage(
+                ext: file.ext,
+                reads: (existing?.reads ?? 0) + file.reads,
+                edits: (existing?.edits ?? 0) + file.edits
+            )
+        }
+
+        var days: [Date: DayActivity] = [:]
+        for day in daily + other.daily {
+            let existing = days[day.day]
+            days[day.day] = DayActivity(
+                day: day.day,
+                prompts: (existing?.prompts ?? 0) + day.prompts,
+                toolCalls: (existing?.toolCalls ?? 0) + day.toolCalls
+            )
+        }
+
+        // Recomputed from the per-conversation lengths rather than averaged: a median cannot
+        // be merged from two medians, and quoting one that was never measured would be worse
+        // than quoting none.
+        let conversations = byConversation.merging(other.byConversation) { mine, _ in mine }
+        let lengths = conversations.values.flatMap(\.promptLengths).sorted()
+
+        return ActivityDigest(
+            tools: toolCalls.values.sorted { ($0.calls, $1.name) > ($1.calls, $0.name) },
+            prompts: PromptStats(
+                count: prompts.count + other.prompts.count,
+                medianChars: lengths.isEmpty ? 0 : lengths[lengths.count / 2],
+                longestChars: max(prompts.longestChars, other.prompts.longestChars),
+                commands: prompts.commands + other.prompts.commands
+            ),
+            files: fileTypes.values.sorted { ($0.operations, $1.ext) > ($1.operations, $0.ext) },
+            byConversation: conversations,
+            daily: days.values.sorted { $0.day < $1.day }
+        )
+    }
 
     public init(
         tools: [ToolUsage], prompts: PromptStats, files: [FileTypeUsage],

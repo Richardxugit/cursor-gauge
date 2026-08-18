@@ -135,9 +135,24 @@ public enum ReportRenderer {
             )
         }.joined()
 
+        // Only worth a line when both front ends were actually used; on an editor-only
+        // account it would be a row saying "100% of it, from the only place it could be".
+        let cli = report.bySource[.cli]
+        let gui = report.bySource[.gui]
+        let split = (cli?.cents ?? 0) > 0 && (gui?.cents ?? 0) > 0
+            ? """
+              <p class="lede split">Cursor the editor \(Format.money(cents: gui?.cents ?? 0))
+              across \(gui?.conversations ?? 0) chats · <code>cursor-agent</code> in a terminal
+              \(Format.money(cents: cli?.cents ?? 0)) across \(cli?.conversations ?? 0).
+              The two keep separate records and name their tools differently, so tool counts
+              below are listed under each one's own vocabulary.</p>
+              """
+            : ""
+
         return """
         <section>
           <h2>Where the money went</h2>
+          \(split)
           <p class="lede">Spend joined to the repository each chat was open in — the one question neither
           the billing API nor the local store can answer alone.</p>
           \(report.workspaces.isEmpty ? "<p class=\"empty\">No spend could be traced to a repository this cycle.</p>" : "<div class=\"bars\">\(rows)</div>")
@@ -361,9 +376,9 @@ public enum ReportRenderer {
     // MARK: - Footer
 
     private static func footer(_ report: UsageReport) -> String {
-        let parts = report.workspaces.reduce(0) { $0 + Format.displayedCents($1.cents) }
-            + Format.displayedCents(report.cloudCents)
-            + Format.displayedCents(report.unattributedCents)
+        // The raw sum, so the two figures in this sentence cannot disagree by a rounding
+        // penny and make a correct breakdown look broken.
+        let parts = report.attributedCents
         let verdict = report.reconciles
             ? "adds up to the cycle total"
             : "DOES NOT add up to the cycle total — treat the breakdown above as unreliable"
@@ -652,6 +667,8 @@ private extension ReportRenderer {
         .reconcile.bad { color: var(--critical); background: color-mix(in srgb, var(--critical) 8%, var(--surface));
                          border: 1px solid var(--critical); font-weight: 550; }
         .fine { font-size: 12.5px; color: var(--muted); max-width: 76ch; margin: 0; }
+        .split { border-left: 2px solid var(--s1); padding-left: 12px; }
+        code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
 
         @media (max-width: 620px) {
           .page { padding: 24px 16px 48px; }

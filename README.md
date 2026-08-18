@@ -289,6 +289,31 @@ the file the way you'd treat your branch names. The page says this on its own fa
 If Cursor's database can't be read, the report still renders the cost half and states that
 the rest is missing, rather than showing empty sections.
 
+### Both front ends
+
+Cursor is two tools: the editor, and `cursor-agent` in a terminal. They keep **entirely
+separate records** — the editor in `state.vscdb`, the CLI under `~/.cursor/chats` — and
+nothing in one references the other.
+
+The billing API never made that distinction, so CLI spend was always in the total and the
+gauge was always right. But with only the editor's store to join against, none of it could
+be named: on the cycle this was built against, **the entire "Unattributed" bucket turned
+out to be CLI work** — $6.68 of it, every cent. Reading both stores closed it to $1.03,
+named all eleven terminal chats, and put their spend against the right repositories.
+
+The report shows the split, and each chat carries a `source` of `gui` or `cli`.
+
+Two limits, stated wherever the numbers appear:
+
+- **The CLI's tool names differ** — `Read` where the editor says `read_file_v2`, `Shell`
+  where it says `run_terminal_command_v2`. They do comparable work, but asserting they are
+  the same tool is an equivalence this code can't verify, so they stay separate rows.
+- **CLI messages carry no timestamps.** Only the conversation has start and end times, so
+  the window applies per conversation and its counts are whole-conversation. Measured on
+  real data this is nearly exact: no CLI conversation ran longer than 1.5 hours, median four
+  minutes. And roughly two thirds of its message blobs aren't plaintext, so CLI *activity*
+  counts are a floor. Cost is unaffected — that comes from the billing API and is exact.
+
 ### JSON, for charts this report doesn't draw
 
 ```sh
@@ -430,7 +455,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 167 tests, no network and no database
+swift test                                   # 189 tests, no network and no database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --report out.html      # build the usage report
 swift run CursorGauge --report out.json --json   # …as data instead

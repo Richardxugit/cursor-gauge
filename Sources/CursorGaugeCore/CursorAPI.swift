@@ -238,7 +238,8 @@ public final class CursorAPI {
         credentials: CredentialsProviding,
         transport: Transport = URLSessionTransport(),
         calendar: Calendar = .current,
-        naming: SessionNaming = SessionCatalog(),
+        // Both front ends, so a terminal agent's chat is named as readily as an editor's.
+        naming: SessionNaming = CombinedNaming([SessionCatalog(), CliCatalog()]),
         clock: @escaping () -> Date = Date.init
     ) {
         self.credentials = credentials

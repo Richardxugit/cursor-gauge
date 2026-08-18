@@ -76,6 +76,9 @@ public struct UsageReport {
     /// Chats that did work in this window but cost nothing — cached or free requests.
     /// A count only: they carry no spend, so adding them to a total would be wrong.
     public let unbilledConversations: Int
+    /// Spend and chat count per front end, so terminal work is visible as its own thing
+    /// rather than blended into the editor's totals.
+    public let bySource: [ActivitySource: (cents: Double, conversations: Int)]
 
     public let totalCents: Double
     public let models: [ModelSpend]
@@ -92,17 +95,23 @@ public struct UsageReport {
     /// worth stating on the page rather than rendering empty sections.
     public var hasActivity: Bool { !tools.isEmpty || prompts.count > 0 }
 
-    /// The check that proves nothing was dropped or double-counted: the three buckets must
-    /// account for the cycle exactly.
+    /// The three buckets, summed. Every billed cent lands in exactly one of them.
+    public var attributedCents: Double {
+        workspaces.reduce(0) { $0 + $1.cents } + cloudCents + unattributedCents
+    }
+
+    /// The check that proves nothing was dropped or double-counted.
     ///
-    /// Compared in the rounding the page is drawn with, matching `SessionBreakdown.display`
-    /// and `DryRun` — summing raw cents and rounding once at the end is right in memory and
-    /// wrong on screen.
+    /// Compared **raw**, not in the rounding the page draws with. An earlier version summed
+    /// each bucket already rounded to whole cents, which made the verdict depend on how many
+    /// repositories happened to be in the cycle: seven rounded values drift from their
+    /// rounded total more readily than four, and it reported a failure on a cycle where the
+    /// raw figures agreed to nine decimal places. Losing a cent to rounding is a display
+    /// detail; losing one to bad attribution is a bug, and only the second is worth alarming
+    /// about. The tolerance is far below the resolution of the data and far above the
+    /// floating-point error of summing a few hundred events.
     public var reconciles: Bool {
-        let parts = workspaces.reduce(0) { $0 + Format.displayedCents($1.cents) }
-            + Format.displayedCents(cloudCents)
-            + Format.displayedCents(unattributedCents)
-        return parts == Format.displayedCents(totalCents)
+        abs(attributedCents - totalCents) < 0.01
     }
 
     // MARK: - Building
@@ -203,6 +212,24 @@ public struct UsageReport {
                              requests: entry.requests, isCloud: entry.cloud)
         }.sorted { ($0.cents, $1.id) > ($1.cents, $0.id) }
 
+        // MARK: Front ends
+        //
+        // Which of Cursor's two faces the money went through. Derived from the same events as
+        // everything else, so it cannot disagree with the repository split.
+        var bySource: [ActivitySource: (cents: Double, conversations: Int)] = [:]
+        var seenPerSource: [ActivitySource: Set<String>] = [:]
+        for event in events {
+            let source = event.conversationID
+                .flatMap { activity.byConversation[$0]?.source } ?? .gui
+            var entry = bySource[source] ?? (0, 0)
+            entry.cents += event.cents
+            bySource[source] = entry
+            if let id = event.conversationID { seenPerSource[source, default: []].insert(id) }
+        }
+        for (source, ids) in seenPerSource {
+            bySource[source]?.conversations = ids.count
+        }
+
         // MARK: Unbilled work
         //
         // Chats that did something in the window and cost nothing. Counted, never costed:
@@ -243,6 +270,7 @@ public struct UsageReport {
             cloudCount: cloudConversations.count,
             unattributedCents: unattributedCents,
             unbilledConversations: unbilled,
+            bySource: bySource,
             totalCents: events.reduce(0) { $0 + $1.cents },
             // Already relabelled and merged by `SessionBreakdown`, so `default` and
             // `auto-smart` arrive as one **Auto** row.

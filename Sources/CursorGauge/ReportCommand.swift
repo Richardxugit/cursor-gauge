@@ -46,8 +46,12 @@ enum ReportCommand {
 
         // The activity window is the billing cycle, so both halves of every figure describe
         // the same period.
+        // Two front ends, two stores. The editor's chats live in `state.vscdb`; the CLI keeps
+        // its own under `~/.cursor/chats`, which nothing in the editor's store references —
+        // which is exactly why CLI spend used to arrive with no name attached.
         let catalog = ActivityCatalog()
         let activity = catalog.digest(since: snapshot.cycleStart)
+            .merging(CliCatalog().digest(since: snapshot.cycleStart))
         let report = UsageReport.build(
             snapshot: snapshot,
             metrics: UsageMetrics(snapshot: snapshot, now: now),
