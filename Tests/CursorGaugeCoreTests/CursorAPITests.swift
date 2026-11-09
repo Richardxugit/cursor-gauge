@@ -643,6 +643,26 @@ extension CursorAPITests {
         XCTAssertEqual(snapshot.capturedAt, now)
     }
 
+    func testFetchSnapshotForMergeSkipsSessionResolution() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let naming = StubNaming([
+            "root": SessionRecord(name: "OXP-54 feature discussion", parentID: nil),
+        ])
+
+        let snapshot = try await sessionAPI(naming).fetchSnapshotForMerge(
+            detail: .full, preferredTeamID: nil, eventsSince: nil
+        )
+
+        XCTAssertEqual(snapshot.settledSpendCents, 251, accuracy: 0.001)
+        XCTAssertEqual(snapshot.liveSpendCents, 308.809726, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.limitDollars ?? -1, 200, accuracy: 0.001)
+        XCTAssertEqual(snapshot.events.count, 4)
+        XCTAssertEqual(snapshot.lastActivity, Date(timeIntervalSince1970: 1_785_658_176.745))
+        XCTAssertEqual(snapshot.sessions, SessionBreakdown.empty)
+        XCTAssertTrue(naming.askedFor.isEmpty)
+    }
+
     func testDecodesConversationIDAndNestsSubagents() async throws {
         routeHappyPath()
         transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)

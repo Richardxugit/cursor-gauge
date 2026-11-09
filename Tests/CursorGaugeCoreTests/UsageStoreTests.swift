@@ -1,4 +1,5 @@
 import XCTest
+import Dispatch
 @testable import CursorGaugeCore
 
 // MARK: - Doubles
@@ -18,6 +19,65 @@ private final class StubNaming: SessionNaming {
     func records(for ids: [String]) -> [String: SessionRecord] {
         guard ids.contains("session-1") else { return [:] }
         return ["session-1": SessionRecord(name: "Session One", parentID: nil)]
+    }
+}
+
+private final class NamingGate: @unchecked Sendable {
+    private let started = DispatchSemaphore(value: 0)
+    private let release = DispatchSemaphore(value: 0)
+
+    func wait() {
+        started.signal()
+        release.wait()
+    }
+
+    func waitUntilStarted() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                let result = self.started.wait(timeout: .now() + 5)
+                continuation.resume(returning: result == .success)
+            }
+        }
+    }
+
+    func open() {
+        release.signal()
+    }
+}
+
+private final class NamingProbe: SessionNaming, @unchecked Sendable {
+    private let lock = NSLock()
+    private let recordsByID: [String: SessionRecord]
+    private var lookups: [(ids: [String], isMainThread: Bool)] = []
+    private var nextGate: NamingGate?
+
+    init(records: [String: SessionRecord]) {
+        recordsByID = records
+    }
+
+    var callCount: Int {
+        lock.withLock { lookups.count }
+    }
+
+    var mainThreadFlags: [Bool] {
+        lock.withLock { lookups.map(\.isMainThread) }
+    }
+
+    func gateNextLookup() -> NamingGate {
+        let gate = NamingGate()
+        lock.withLock { nextGate = gate }
+        return gate
+    }
+
+    func records(for ids: [String]) -> [String: SessionRecord] {
+        let gate = lock.withLock {
+            lookups.append((ids, Thread.isMainThread))
+            let gate = nextGate
+            nextGate = nil
+            return gate
+        }
+        gate?.wait()
+        return recordsByID.filter { ids.contains($0.key) }
     }
 }
 
@@ -311,7 +371,8 @@ final class UsageStoreTests: XCTestCase {
         transport: Transport,
         deadline: TimeInterval,
         activity: CursorActivityObserving = StubActivity(),
-        clock: @escaping () -> Date = Date.init
+        clock: @escaping () -> Date = Date.init,
+        naming: SessionNaming = StubNaming()
     ) -> UsageStore {
         let credentials = StubCredentials()
         return UsageStore(
@@ -319,7 +380,7 @@ final class UsageStoreTests: XCTestCase {
             api: CursorAPI(
                 credentials: credentials,
                 transport: transport,
-                naming: StubNaming()
+                naming: naming
             ),
             activity: activity,
             deadline: deadline,
@@ -396,6 +457,48 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot?.sessions, SessionBreakdown.empty)
 
         XCTAssertEqual(transport.eventPageSizes, [1, 500, 1])
+    }
+
+    func testSummaryPublishesDoNotResolveNames() async {
+        let transport = SwitchableTransport()
+        let naming = NamingProbe(records: [
+            "session-1": SessionRecord(name: "Session One", parentID: nil),
+        ])
+        let store = makeStore(transport: transport, deadline: 5, naming: naming)
+
+        let succeeded = await store.refresh()
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(naming.callCount, 0)
+        XCTAssertEqual(store.snapshot?.sessions, SessionBreakdown.empty)
+    }
+
+    func testFullPublishesResolveNamesOnceOffMainThread() async {
+        let transport = SwitchableTransport()
+        transport.setEventBodies([Route.eventOne, Route.updatedPlusNew])
+        let naming = NamingProbe(records: [
+            "session-1": SessionRecord(name: "Session One", parentID: nil),
+            "session-2": SessionRecord(name: "Session Two", parentID: nil),
+        ])
+        let store = makeStore(transport: transport, deadline: 5, naming: naming)
+        store.setMenuOpen(true)
+
+        let wholeWindow = await store.refresh()
+
+        XCTAssertTrue(wholeWindow)
+        XCTAssertEqual(naming.callCount, 1)
+        XCTAssertEqual(naming.mainThreadFlags, [false])
+        XCTAssertEqual(store.snapshot?.sessions.ranked.map(\.name), ["Session One"])
+        XCTAssertEqual(store.snapshot?.sessions.totalCents ?? -1, 12.5, accuracy: 0.001)
+
+        let topUp = await store.refresh()
+
+        XCTAssertTrue(topUp)
+        XCTAssertEqual(naming.callCount, 2)
+        XCTAssertEqual(naming.mainThreadFlags, [false, false])
+        XCTAssertEqual(store.snapshot?.sessions.ranked.map(\.name), ["Session One", "Session Two"])
+        XCTAssertEqual(store.snapshot?.sessions.totalCents ?? -1, 104.9, accuracy: 0.001)
+        XCTAssertEqual(store.snapshot?.events.count, 2)
     }
 
     func testOpeningDuringAStalledSummaryUpgradesToFullAfterTimeout() async {
@@ -576,6 +679,38 @@ final class UsageStoreTests: XCTestCase {
             transport.teamIDs(forPath: "/api/dashboard/get-filtered-usage-events").last,
             28605405
         )
+    }
+
+    func testTeamSwitchDuringBackgroundSessionResolutionDiscardsOldMerge() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        transport.setEventBodies([Route.eventOne, Route.eventTwo])
+        let naming = NamingProbe(records: [
+            "session-1": SessionRecord(name: "Session One", parentID: nil),
+            "session-2": SessionRecord(name: "Session Two", parentID: nil),
+        ])
+        let store = makeStore(transport: transport, deadline: 5, naming: naming)
+        store.setMenuOpen(true)
+        let oldTeamGate = naming.gateNextLookup()
+        async let refreshed = store.refresh()
+        guard await oldTeamGate.waitUntilStarted() else {
+            XCTFail("the old team's background naming pass never started")
+            oldTeamGate.open()
+            _ = await refreshed
+            return
+        }
+
+        store.selectTeam(28605405)
+        oldTeamGate.open()
+        let succeeded = await refreshed
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-2"])
+        XCTAssertEqual(store.snapshot?.sessions.ranked.map(\.name), ["Session Two"])
+        XCTAssertEqual(naming.callCount, 2, "the discarded build must be followed by the new team's build")
+        XCTAssertEqual(naming.mainThreadFlags, [false, false])
+        XCTAssertEqual(transport.eventStartDates, [1_785_542_400_000, 1_785_542_400_000])
     }
 
     func testTeamSwitchDuringRefreshDiscardsOldFailureAndLoadsNewTeam() async {

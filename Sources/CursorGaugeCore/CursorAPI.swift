@@ -391,6 +391,18 @@ public final class CursorAPI {
 
     // MARK: Snapshot
 
+    /// Fetches events without building a session tree that the merge caller would discard.
+    func fetchSnapshotForMerge(
+        detail: SnapshotDetail,
+        preferredTeamID: Int?,
+        eventsSince: Date?
+    ) async throws -> UsageSnapshot {
+        try await fetchSnapshot(
+            detail: detail, preferredTeamID: preferredTeamID, eventsSince: eventsSince,
+            resolveSessions: false
+        )
+    }
+
     /// - Parameter eventsSince: When non-nil and `detail` is `.full`, the event feed
     ///   window starts at `max(cycleStart, eventsSince - 10 minutes)` instead of covering
     ///   the whole cycle, so a top-up only re-downloads what is new. The overlap admits
@@ -400,6 +412,18 @@ public final class CursorAPI {
         detail: SnapshotDetail = .full,
         preferredTeamID: Int? = nil,
         eventsSince: Date? = nil
+    ) async throws -> UsageSnapshot {
+        try await fetchSnapshot(
+            detail: detail, preferredTeamID: preferredTeamID, eventsSince: eventsSince,
+            resolveSessions: true
+        )
+    }
+
+    private func fetchSnapshot(
+        detail: SnapshotDetail,
+        preferredTeamID: Int?,
+        eventsSince: Date?,
+        resolveSessions: Bool
     ) async throws -> UsageSnapshot {
         let identity = try await discoverIdentity(preferredTeamID: preferredTeamID)
         let now = clock()
@@ -456,10 +480,12 @@ public final class CursorAPI {
             sessionsTruncated = false
             snapshotEvents = []
         case .full:
-            sessions = SessionBreakdown.build(
-                events: feed.events,
-                catalog: naming.records(for: Array(Set(feed.events.compactMap(\.conversationID))))
-            )
+            sessions = resolveSessions
+                ? SessionBreakdown.build(
+                    events: feed.events,
+                    catalog: naming.records(for: Array(Set(feed.events.compactMap(\.conversationID))))
+                )
+                : .empty
             sessionsTruncated = feed.truncated
             snapshotEvents = feed.events
         }

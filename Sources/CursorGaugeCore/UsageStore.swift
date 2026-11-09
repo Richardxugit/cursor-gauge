@@ -245,7 +245,12 @@ public final class UsageStore {
                 detail == .full && !fetchedWholeWindow ? mergedEvents.map(\.timestamp).max() : nil
             do {
                 let fresh = try await withDeadline(deadline) { [api] in
-                    try await api.fetchSnapshot(
+                    if detail == .full {
+                        return try await api.fetchSnapshotForMerge(
+                            detail: detail, preferredTeamID: preferredTeamID, eventsSince: eventsSince
+                        )
+                    }
+                    return try await api.fetchSnapshot(
                         detail: detail, preferredTeamID: preferredTeamID, eventsSince: eventsSince
                     )
                 }
@@ -254,25 +259,35 @@ public final class UsageStore {
                 } else {
                     // A summary that finishes after the menu opens must not erase visible details.
                     if detail == .full || !menuIsOpen {
-                        let published: UsageSnapshot
+                        var published = fresh
+                        var prospectiveMergedEvents: [SessionEvent]?
                         if detail == .full {
-                            mergedEvents = mergedFeed(from: fresh, fetchedWholeWindow: fetchedWholeWindow)
-                            mergedCycleStart = fresh.cycleStart
-                            fullPublishCount += 1
-                            forceNextWholeWindow = fresh.sessionsTruncated
-                            published = rebuilt(fresh, events: mergedEvents)
-                        } else {
-                            published = fresh
+                            let events = mergedFeed(from: fresh, fetchedWholeWindow: fetchedWholeWindow)
+                            let resolved = await resolveForPublish(fresh, events: events)
+                            published = resolved.snapshot
+                            prospectiveMergedEvents = resolved.events
                         }
-                        snapshot = published
-                        lastUpdated = fresh.capturedAt
-                        status = .ready
-                        consecutiveFailures = 0
-                        teamOptions = api.teamOptions
-                        recomputeMetrics()
-                        updateQuietState(with: published)
+                        if selectionGeneration != generation {
+                            // Resolution outlived the selection. Drop both the snapshot and
+                            // its prospective merge base; the repeat loop reads the new team.
+                            attemptWasSuperseded = true
+                        } else {
+                            if let events = prospectiveMergedEvents {
+                                mergedEvents = events
+                                mergedCycleStart = fresh.cycleStart
+                                fullPublishCount += 1
+                                forceNextWholeWindow = fresh.sessionsTruncated
+                            }
+                            snapshot = published
+                            lastUpdated = fresh.capturedAt
+                            status = .ready
+                            consecutiveFailures = 0
+                            teamOptions = api.teamOptions
+                            recomputeMetrics()
+                            updateQuietState(with: published)
+                        }
                     }
-                    succeeded = true
+                    if !attemptWasSuperseded { succeeded = true }
                 }
             } catch {
                 if selectionGeneration != generation {
@@ -317,25 +332,34 @@ public final class UsageStore {
         return byKey.values.sorted { $0.timestamp < $1.timestamp }
     }
 
-    /// Rebuilds the presentable snapshot over a merged event set.
-    private func rebuilt(_ fresh: UsageSnapshot, events: [SessionEvent]) -> UsageSnapshot {
-        UsageSnapshot(
-            settledSpendCents: fresh.settledSpendCents,
-            liveSpendCents: fresh.liveSpendCents,
-            limitDollars: fresh.limitDollars,
-            cycleStart: fresh.cycleStart,
-            cycleEnd: fresh.cycleEnd,
-            todayCents: fresh.todayCents,
-            models: fresh.models,
-            lastActivity: events.map(\.timestamp).max(),
-            capturedAt: fresh.capturedAt,
-            sessions: SessionBreakdown.build(
+    /// Resolves names and rebuilds the presentable snapshot over a merged event set off
+    /// the main actor. The merged events travel with the snapshot so publish can commit
+    /// both only after confirming that the selection is still current.
+    private func resolveForPublish(
+        _ fresh: UsageSnapshot, events: [SessionEvent]
+    ) async -> (snapshot: UsageSnapshot, events: [SessionEvent]) {
+        let api = api
+        return await Task.detached {
+            let sessions = SessionBreakdown.build(
                 events: events,
                 catalog: api.sessionRecords(for: Array(Set(events.compactMap(\.conversationID))))
-            ),
-            sessionsTruncated: fresh.sessionsTruncated,
-            events: events
-        )
+            )
+            let snapshot = UsageSnapshot(
+                settledSpendCents: fresh.settledSpendCents,
+                liveSpendCents: fresh.liveSpendCents,
+                limitDollars: fresh.limitDollars,
+                cycleStart: fresh.cycleStart,
+                cycleEnd: fresh.cycleEnd,
+                todayCents: fresh.todayCents,
+                models: fresh.models,
+                lastActivity: events.map(\.timestamp).max(),
+                capturedAt: fresh.capturedAt,
+                sessions: sessions,
+                sessionsTruncated: fresh.sessionsTruncated,
+                events: events
+            )
+            return (snapshot, events)
+        }.value
     }
 
     /// One billed request's identity for merge deduplication.
