@@ -43,6 +43,7 @@ struct CursorGaugeApp: App {
         let store = UsageStore(credentials: credentials, thresholds: preferences.thresholds)
         _preferences = State(initialValue: preferences)
         _store = State(initialValue: store)
+        store.preferredTeamID = preferences.selectedTeamID
         store.start()
     }
 

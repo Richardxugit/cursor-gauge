@@ -33,6 +33,15 @@ final class Preferences {
     var criticalPercent: Double {
         didSet { defaults.set(criticalPercent, forKey: Key.criticalPercent) }
     }
+    var selectedTeamID: Int? {
+        didSet {
+            if let selectedTeamID {
+                defaults.set(selectedTeamID, forKey: Key.selectedTeamID)
+            } else {
+                defaults.removeObject(forKey: Key.selectedTeamID)
+            }
+        }
+    }
 
     private let defaults: UserDefaults
 
@@ -41,6 +50,7 @@ final class Preferences {
         static let paceMode = "paceModeEnabled"
         static let warningPercent = "warningPercent"
         static let criticalPercent = "criticalPercent"
+        static let selectedTeamID = "selectedTeamID"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -49,6 +59,7 @@ final class Preferences {
         paceModeEnabled = defaults.object(forKey: Key.paceMode) as? Bool ?? true
         warningPercent = defaults.object(forKey: Key.warningPercent) as? Double ?? 60
         criticalPercent = defaults.object(forKey: Key.criticalPercent) as? Double ?? 85
+        selectedTeamID = defaults.object(forKey: Key.selectedTeamID) as? Int
     }
 
     var thresholds: GaugeThresholds {

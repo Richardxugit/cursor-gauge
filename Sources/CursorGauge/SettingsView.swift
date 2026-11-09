@@ -15,6 +15,22 @@ struct SettingsView: View {
                 }
             }
 
+            if !store.teamOptions.isEmpty {
+                Section("Team") {
+                    Picker("Team", selection: $preferences.selectedTeamID) {
+                        Text("Auto — most usage").tag(Int?.none)
+                        ForEach(store.teamOptions, id: \.id) { team in
+                            Text(team.name).tag(Optional(team.id))
+                        }
+                    }
+                    .onChange(of: preferences.selectedTeamID) { _, newValue in
+                        preferences.selectedTeamID = newValue
+                        store.selectTeam(newValue)
+                        Task { await store.refresh() }
+                    }
+                }
+            }
+
             Section("Warnings") {
                 LabeledContent("Amber above") {
                     Stepper(
