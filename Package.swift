@@ -17,5 +17,9 @@ let package = Package(
             name: "CursorGaugeCoreTests",
             dependencies: ["CursorGaugeCore"]
         ),
+        .testTarget(
+            name: "CursorGaugeTests",
+            dependencies: ["CursorGauge", "CursorGaugeCore"]
+        ),
     ]
 )

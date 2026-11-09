@@ -442,7 +442,10 @@ struct MenuContent: View {
         Task {
             defer { isBuildingReport = false }
             do {
-                let written = try await ReportCommand.write(to: ReportCommand.defaultDestination())
+                let written = try await ReportCommand.write(
+                    to: ReportCommand.defaultDestination(),
+                    preferredTeamID: preferences.selectedTeamID
+                )
                 NSWorkspace.shared.open(written)
             } catch {
                 reportError = (error as? APIError)?.description
