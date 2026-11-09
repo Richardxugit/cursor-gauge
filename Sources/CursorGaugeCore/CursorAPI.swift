@@ -226,12 +226,29 @@ public final class CursorAPI {
         case full
     }
 
+    /// One entry in the Settings team picker. Captured from the teams endpoint in API
+    /// order every time identity discovery runs.
+    public struct TeamOption: Equatable {
+        public let id: Int
+        public let name: String
+
+        public init(id: Int, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
     private let transport: Transport
     private let credentials: CredentialsProviding
     private let clock: () -> Date
     private let calendar: Calendar
     private let naming: SessionNaming
     private var identity: AccountIdentity?
+    /// The preference the cached `identity` was discovered with. A different value —
+    /// including nil versus non-nil — means the cache does not apply.
+    private var cachedPreferredTeamID: Int?
+
+    public private(set) var teamOptions: [TeamOption] = []
 
     private static let base = "https://cursor.com"
     /// One page covers a normal cycle (84 events over the first six days of a heavy
@@ -256,6 +273,7 @@ public final class CursorAPI {
 
     public func forgetIdentity() {
         identity = nil
+        cachedPreferredTeamID = nil
     }
 
     // MARK: Requests
@@ -307,43 +325,71 @@ public final class CursorAPI {
 
     /// Works out which numeric user id and which team this Mac's signed-in user maps to.
     ///
-    /// A user can belong to several teams (e.g. an org team plus a shared bugbot team);
-    /// only one of them carries a per-user spend limit, so we pick that one and fall
-    /// back to whichever shows spend.
-    public func discoverIdentity() async throws -> AccountIdentity {
-        if let identity { return identity }
+    /// A user can belong to several teams (e.g. an org team plus a shared bugbot team).
+    /// Selection order: an explicit `preferredTeamID` when that team still lists the
+    /// user, otherwise the team with the most usage (ties: one publishing a limit, then
+    /// API order). The cached result is scoped to the preference it was discovered
+    /// with, so a different preference triggers rediscovery.
+    public func discoverIdentity(preferredTeamID: Int? = nil) async throws -> AccountIdentity {
+        if let identity, cachedPreferredTeamID == preferredTeamID { return identity }
 
         let me = try await call(AuthMeResponse.self, path: "/api/auth/me", method: "GET", body: nil)
         let teams = try await call(TeamsResponse.self, path: "/api/dashboard/teams")
+        teamOptions = teams.teams.map { TeamOption(id: $0.id, name: $0.name) }
 
-        var fallback: AccountIdentity?
-        for team in teams.teams {
+        struct Candidate {
+            let identity: AccountIdentity
+            let spendCents: Double
+            let hasLimit: Bool
+            let order: Int
+        }
+
+        var candidates: [Candidate] = []
+        for (order, team) in teams.teams.enumerated() {
             let spend = try await call(
                 TeamSpendResponse.self,
                 path: "/api/dashboard/get-team-spend",
                 body: ["teamId": team.id]
             )
             guard let mine = spend.teamMemberSpend.first(where: { $0.userId == me.id }) else { continue }
-            let candidate = AccountIdentity(numericUserID: me.id, teamID: team.id, teamName: team.name)
-
-            if mine.monthlyLimitDollars != nil || mine.effectivePerUserLimitDollars != nil {
-                identity = candidate
-                return candidate
-            }
-            if fallback == nil || (mine.overallSpendCents?.value ?? 0) > 0 {
-                fallback = candidate
-            }
+            candidates.append(Candidate(
+                identity: AccountIdentity(numericUserID: me.id, teamID: team.id, teamName: team.name),
+                spendCents: mine.overallSpendCents?.value ?? 0,
+                hasLimit: mine.monthlyLimitDollars != nil || mine.effectivePerUserLimitDollars != nil,
+                order: order
+            ))
         }
 
-        guard let fallback else { throw APIError.noTeamFound }
-        identity = fallback
-        return fallback
+        // 1. The user's explicit choice wins when it is still a team they belong to.
+        if let preferredTeamID,
+           let preferred = candidates.first(where: { $0.identity.teamID == preferredTeamID }) {
+            identity = preferred.identity
+            cachedPreferredTeamID = preferredTeamID
+            return preferred.identity
+        }
+
+        // 2. Otherwise the most-used team: highest overallSpendCents; ties prefer a
+        //    team publishing a limit, then the earliest in API order.
+        let chosen = candidates.max { lhs, rhs in
+            if lhs.spendCents != rhs.spendCents { return lhs.spendCents < rhs.spendCents }
+            if lhs.hasLimit != rhs.hasLimit { return !lhs.hasLimit }
+            return lhs.order > rhs.order
+        }
+
+        // 3. No team carries a spend row for this account.
+        guard let chosen else { throw APIError.noTeamFound }
+
+        identity = chosen.identity
+        cachedPreferredTeamID = preferredTeamID
+        return chosen.identity
     }
 
     // MARK: Snapshot
 
-    public func fetchSnapshot(detail: SnapshotDetail = .full) async throws -> UsageSnapshot {
-        let identity = try await discoverIdentity()
+    public func fetchSnapshot(
+        detail: SnapshotDetail = .full, preferredTeamID: Int? = nil
+    ) async throws -> UsageSnapshot {
+        let identity = try await discoverIdentity(preferredTeamID: preferredTeamID)
         let now = clock()
 
         let spend = try await call(

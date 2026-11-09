@@ -47,6 +47,22 @@ private final class StubTransport: Transport, @unchecked Sendable {
     }
 }
 
+/// Serves scripted responses for `get-team-spend` in call order — mirroring the API's
+/// teams order — with fixed routes for everything else. Sequential use only.
+private final class ScriptedSpendTransport: Transport, @unchecked Sendable {
+    var spendBodies: [String] = []
+    var other: [String: (String, Int)] = [:]
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let path = request.url?.path ?? ""
+        let body = path == "/api/dashboard/get-team-spend"
+            ? (spendBodies.isEmpty ? "{}" : spendBodies.removeFirst())
+            : other[path]?.0 ?? "{}"
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        return (Data(body.utf8), response)
+    }
+}
+
 // MARK: - Fixtures captured from the live account
 
 private enum Fixture {
@@ -180,6 +196,102 @@ final class CursorAPITests: XCTestCase {
         XCTAssertEqual(identity.teamID, 27362705)
         XCTAssertEqual(identity.teamName, "tech-digital")
         XCTAssertEqual(identity.numericUserID, 307093031)
+    }
+
+    /// The reported bug: bugbot (limit 200, zero spend) is listed before tech-digital
+    /// (limit 400, real spend). The old rule picked the first limit-bearing team; the
+    /// most-usage rule must pick the team where the user actually works.
+    func testMostUsageBeatsAnEarlierLimitBearingTeam() async throws {
+        routeHappyPath()
+        let ordered = ScriptedSpendTransport()
+        ordered.other = transport.routes
+        ordered.spendBodies = [Fixture.spendZeroLimit200, Fixture.spend251Limit400]
+
+        let api = CursorAPI(credentials: credentials, transport: ordered, clock: { self.now })
+        let identity = try await api.discoverIdentity()
+
+        XCTAssertEqual(identity.teamID, 27362705)
+        XCTAssertEqual(identity.teamName, "tech-digital")
+        XCTAssertEqual(identity.numericUserID, 307093031)
+    }
+
+    func testPreferredTeamWinsEvenWithLessUsage() async throws {
+        routeHappyPath()
+        let ordered = ScriptedSpendTransport()
+        ordered.other = transport.routes
+        ordered.spendBodies = [Fixture.spendZeroLimit200, Fixture.spend251Limit400]
+
+        let api = CursorAPI(credentials: credentials, transport: ordered, clock: { self.now })
+        let identity = try await api.discoverIdentity(preferredTeamID: 28605405)
+
+        XCTAssertEqual(identity.teamID, 28605405)
+        XCTAssertEqual(identity.teamName, "bugbot")
+    }
+
+    func testStalePreferenceFallsBackToMostUsage() async throws {
+        routeHappyPath()
+        let ordered = ScriptedSpendTransport()
+        ordered.other = transport.routes
+        ordered.spendBodies = [Fixture.spendZeroLimit200, Fixture.spend251Limit400]
+
+        let api = CursorAPI(credentials: credentials, transport: ordered, clock: { self.now })
+        let identity = try await api.discoverIdentity(preferredTeamID: 999_999)
+
+        XCTAssertEqual(identity.teamID, 27362705)
+        XCTAssertEqual(identity.teamName, "tech-digital")
+    }
+
+    func testIdentityCacheIsScopedToThePreferredTeam() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+
+        _ = try await api.discoverIdentity()
+        let afterFirst = transport.requests.count
+        _ = try await api.discoverIdentity()
+        XCTAssertEqual(transport.requests.count, afterFirst, "same preference must hit the cache")
+
+        _ = try await api.discoverIdentity(preferredTeamID: 28605405)
+        XCTAssertGreaterThan(transport.requests.count, afterFirst, "a new preference must rediscover")
+        let afterPreference = transport.requests.count
+
+        _ = try await api.discoverIdentity()
+        XCTAssertGreaterThan(transport.requests.count, afterPreference, "returning to nil must rediscover again")
+    }
+
+    func testTeamOptionsReflectTheTeamsEndpointInAPIOrder() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+
+        _ = try await api.discoverIdentity()
+
+        XCTAssertEqual(api.teamOptions, [
+            CursorAPI.TeamOption(id: 28605405, name: "bugbot"),
+            CursorAPI.TeamOption(id: 27362705, name: "tech-digital"),
+        ])
+    }
+
+    func testFetchSnapshotPassesThePreferenceToEveryRequest() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendZeroLimit200, 200)
+
+        let snapshot = try await api.fetchSnapshot(preferredTeamID: 28605405)
+
+        // The preferred team's figures, not the most-used team's.
+        XCTAssertEqual(snapshot.settledSpendCents, 0, accuracy: 0.001)
+        XCTAssertEqual(snapshot.limitDollars ?? -1, 200, accuracy: 0.001)
+
+        let teamPaths = [
+            "/api/dashboard/get-team-spend",
+            "/api/dashboard/get-aggregated-usage-events",
+            "/api/dashboard/get-filtered-usage-events",
+        ]
+        for path in teamPaths {
+            let request = try XCTUnwrap(transport.requests.last { $0.url?.path == path })
+            let body = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any]
+            )
+            XCTAssertEqual(body["teamId"] as? Int, 28605405, "\(path) must target the preferred team")
+        }
     }
 
     func testIdentityIsCachedAcrossCalls() async throws {
@@ -379,6 +491,25 @@ private extension Fixture {
     static let spendWithoutLimitForOtherUser = """
     {"teamMemberSpend":[{"userId":555,"overallSpendCents":10}],
      "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000"}
+    """
+
+    /// The reported bug: bugbot publishes a per-user limit (200) but carries zero
+    /// spend, while tech-digital — later in the API order — is where the money is.
+    static let spendZeroLimit200 = """
+    {"teamMemberSpend":[
+      {"userId":307093031,"name":"Someone","email":"someone@example.com","role":"TEAM_ROLE_MEMBER",
+       "overallSpendCents":0,"monthlyLimitDollars":200,"effectivePerUserLimitDollars":200}
+    ],
+     "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000","totalMembers":105}
+    """
+
+    /// The team the user actually works in: real spend, higher limit.
+    static let spend251Limit400 = """
+    {"teamMemberSpend":[
+      {"userId":307093031,"name":"Someone","email":"someone@example.com","role":"TEAM_ROLE_MEMBER",
+       "overallSpendCents":251,"monthlyLimitDollars":400,"effectivePerUserLimitDollars":400}
+    ],
+     "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000","totalMembers":105}
     """
 }
 
