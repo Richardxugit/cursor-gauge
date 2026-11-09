@@ -108,13 +108,20 @@ Built locally, that isn't needed.
 
 ## What it shows
 
-| | |
+The current feature set, at a glance:
+
+| Area | Included |
 |---|---|
-| **Gauge + amount** | Spend this billing cycle against your limit |
-| **Today** | Spend since midnight, live |
-| **Estimated total** | Where the cycle lands at the current rate (hidden for the first day — too noisy) |
-| **Top sessions** | What each chat cost, subagents rolled into the chat that spawned them |
-| **Last request** | When Cursor last charged something |
+| **Menu-bar gauge** | Cycle spend against the limit; show amount, percentage, or icon only; stale readings are dimmed |
+| **Cycle figures** | Best-available cycle spend from live/settled billing figures, today's spend, last request, and an end-of-cycle estimate (hidden for the first day — too noisy) |
+| **Warnings** | Configurable amber/red thresholds, plus optional pace warnings when spend outruns the billing calendar |
+| **Teams** | Automatic selection of the team with the most usage, or an explicit persisted choice in Settings |
+| **Sessions** | Per-chat cost with subagents rolled into their parent, expandable rows, and explicit partial-feed/unnamed-session handling |
+| **Cloud agents** | Separate cloud spend, or a cloud marker when the chat also has a local record |
+| **Models** | Cycle-wide model spend from billed events, including an honest `Auto` bucket when Cursor does not disclose the selected model |
+| **Reports** | Offline HTML and structured JSON joining billing with editor and CLI activity; prompt text is excluded unless explicitly requested |
+| **Refresh** | Activity-aware polling, quiet-account backoff, incremental event top-ups, full reconciliation, wake/menu/manual refresh, and failure recovery |
+| **Startup** | Optional launch at login; off by default |
 
 "Estimated total" is a **forecast of the end-of-cycle total**, including what you have
 already spent — not the balance remaining. There is deliberately no burn-rate row: it is
@@ -235,6 +242,17 @@ amber past 60%, red past 85%, both configurable.
 percentage is a weak signal. Pace mode goes amber when spending outruns the calendar —
 40% of budget on day 10 of 31 — regardless of how low the percentage is. The thin
 vertical marker on the progress bar is where the calendar says you should be.
+
+### Settings
+
+Settings persist across launches:
+
+- **Menu bar:** amount spent, percentage of limit, or icon only.
+- **Team:** `Auto — most usage` by default, or a specific team. Switching teams clears the
+  old team's figures immediately and refreshes all spend, model and session data in the new
+  team context; an in-flight answer from the previous team is discarded.
+- **Warnings:** amber and red thresholds, and whether pace warnings are enabled.
+- **Startup:** open at login, available when running as an installed app bundle.
 
 ## Reports
 
@@ -368,9 +386,21 @@ There's no push API, so it polls adaptively:
 | Cursor running but idle | 5 min |
 | Cursor not running | 30 min |
 
-Plus immediately on menu open, on ⌘R, and on wake from sleep. Repeated failures back off
-exponentially to a 15-minute ceiling. A reading old enough to mislead is dimmed rather
-than shown as current.
+When the menu is closed and repeated polls return the same spend, today's total and last
+activity, active/idle polling backs off exponentially to a 30-minute ceiling. New activity
+resets it immediately. An open menu always keeps the base cadence, dormant polling is
+already capped at 30 minutes, and failure backoff remains separate rather than compounding
+with quiet backoff.
+
+Background polls fetch only the headline summary and latest-request marker. Opening the
+menu upgrades to a full read. Full reads incrementally top up the event feed with a
+ten-minute overlap for late-arriving events, deduplicate adjusted rows, and periodically
+reconcile against the whole billing cycle; cycle rollover or a truncated feed also forces
+a full rebuild. Reports always export the whole event window rather than a top-up.
+
+There is also an immediate refresh on menu open, on ⌘R, and on wake from sleep. Repeated
+failures back off exponentially to a 15-minute ceiling. A reading old enough to mislead is
+dimmed rather than shown as current.
 
 The clock runs independently of whether any given reading succeeds, and no reading may
 take longer than 45 seconds. Both matter more than they sound: a request that never
@@ -455,7 +485,7 @@ Cursor's SQLite store and lets Cursor's own refresh cycle keep it valid.
 ## Development
 
 ```sh
-swift test                                   # 189 tests, no network and no database
+swift test                                   # offline; no network and no account database
 swift run CursorGauge --dry-run              # print the live reading as text
 swift run CursorGauge --report out.html      # build the usage report
 swift run CursorGauge --report out.json --json   # …as data instead
