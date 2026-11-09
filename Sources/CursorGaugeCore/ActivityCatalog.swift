@@ -311,36 +311,58 @@ public final class ActivityCatalog {
         guard let database = ReadOnlyDatabase(url: databaseURL) else { return .empty }
         let start = Self.boundary.string(from: since)
 
-        // A store missing the bubble table has nothing to say. Distinguishing that from a
-        // genuinely quiet window keeps a renamed table from reading as "you did no work".
-        guard let tools = tools(database, since: start) else { return .empty }
+        // Extract every field the aggregations need in one pass over the large table. In
+        // particular, keep only the file path from `params`: copying streamingContent into
+        // this table would reproduce the very payload the digest is designed to avoid.
+        let created = database.query("""
+            CREATE TEMP TABLE digest_bubbles AS
+            SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
+                   json_extract(value, '$.toolFormerData.name') AS tool,
+                   json_extract(value, '$.toolFormerData.status') AS status,
+                   json_extract(value, '$.toolFormerData.userDecision') AS userDecision,
+                   CASE WHEN json_valid(json_extract(value, '$.toolFormerData.params'))
+                        THEN coalesce(
+                            json_extract(json_extract(value, '$.toolFormerData.params'),
+                                         '$.relativeWorkspacePath'),
+                            json_extract(json_extract(value, '$.toolFormerData.params'),
+                                         '$.targetFile'))
+                   END AS path,
+                   json_extract(value, '$.text') AS text,
+                   json_extract(value, '$.createdAt') AS createdAt,
+                   \(Self.isPrompt) AS isPrompt
+            FROM cursorDiskKV
+            WHERE \(Self.bubblesInWindow)
+            """, [start]) { _ in }
+        // A missing bubble table must remain distinguishable from a genuinely quiet window.
+        guard created else { return .empty }
+        defer { database.query("DROP TABLE IF EXISTS temp.digest_bubbles") { _ in } }
 
-        let files = files(database, since: start)
+        guard let tools = tools(database) else { return .empty }
+        let files = files(database)
         return ActivityDigest(
             tools: tools,
-            prompts: prompts(database, since: start),
+            prompts: prompts(database),
             files: files.overall,
-            byConversation: conversations(database, since: start, fileTypes: files.perConversation),
-            daily: daily(database, since: start)
+            byConversation: conversations(database, fileTypes: files.perConversation),
+            daily: daily(database)
         )
     }
 
     // MARK: - Queries
 
-    private func tools(_ database: ReadOnlyDatabase, since: String) -> [ToolUsage]? {
+    private func tools(_ database: ReadOnlyDatabase) -> [ToolUsage]? {
         var found: [ToolUsage] = []
         let ran = database.query("""
-            SELECT json_extract(value, '$.toolFormerData.name') AS tool,
+            SELECT tool,
                    count(*),
-                   sum(json_extract(value, '$.toolFormerData.status') = 'error'),
-                   sum(json_extract(value, '$.toolFormerData.status') = 'cancelled'),
-                   sum(json_extract(value, '$.toolFormerData.userDecision') = 'rejected')
-            FROM cursorDiskKV
-            WHERE \(Self.bubblesInWindow)
-              AND json_extract(value, '$.toolFormerData.name') IS NOT NULL
+                   sum(status = 'error'),
+                   sum(status = 'cancelled'),
+                   sum(userDecision = 'rejected')
+            FROM temp.digest_bubbles
+            WHERE tool IS NOT NULL
             GROUP BY tool
             ORDER BY 2 DESC, tool
-            """, [since]) { row in
+            """) { row in
             guard let name = row.text(0) else { return }
             found.append(ToolUsage(
                 name: name, calls: row.int(1),
@@ -350,14 +372,14 @@ public final class ActivityCatalog {
         return ran ? found : nil
     }
 
-    private func prompts(_ database: ReadOnlyDatabase, since: String) -> PromptStats {
+    private func prompts(_ database: ReadOnlyDatabase) -> PromptStats {
         // Only the lengths cross into Swift; the prompt text stays in the database.
         var lengths: [Int] = []
         database.query("""
-            SELECT length(json_extract(value, '$.text'))
-            FROM cursorDiskKV
-            WHERE \(Self.bubblesInWindow) AND \(Self.isPrompt)
-            """, [since]) { row in
+            SELECT length(text)
+            FROM temp.digest_bubbles
+            WHERE isPrompt
+            """) { row in
             lengths.append(row.int(0))
         }
 
@@ -368,10 +390,9 @@ public final class ActivityCatalog {
                                   THEN substr(flat, 1, instr(flat, ' ') - 1)
                                   ELSE substr(flat, 1, \(Self.maxCommandLength)) END) AS command
                 FROM (
-                    SELECT replace(replace(json_extract(value, '$.text'),
-                                           char(10), ' '), char(13), ' ') AS flat
-                    FROM cursorDiskKV
-                    WHERE \(Self.bubblesInWindow) AND \(Self.isPrompt)
+                    SELECT replace(replace(text, char(10), ' '), char(13), ' ') AS flat
+                    FROM temp.digest_bubbles
+                    WHERE isPrompt
                 )
                 WHERE flat LIKE '/%'
             )
@@ -379,7 +400,7 @@ public final class ActivityCatalog {
             WHERE instr(substr(command, 2), '/') = 0 AND length(command) > 1
             GROUP BY command
             ORDER BY 2 DESC, command
-            """, [since]) { row in
+            """) { row in
             guard let command = row.text(0) else { return }
             commands.append(CommandUsage(command: command, count: row.int(1)))
         }
@@ -400,30 +421,17 @@ public final class ActivityCatalog {
     /// inside SQLite so that `params.streamingContent`, which holds whole file bodies, never
     /// leaves the database; only extensions and counts come back.
     private func files(
-        _ database: ReadOnlyDatabase, since: String
+        _ database: ReadOnlyDatabase
     ) -> (overall: [FileTypeUsage], perConversation: [String: [String: Int]]) {
         var reads: [String: Int] = [:]
         var edits: [String: Int] = [:]
         var perConversation: [String: [String: Int]] = [:]
         database.query("""
-            SELECT conversation, tool, path, count(*) FROM (
-                SELECT conversation, tool,
-                       CASE WHEN json_valid(params)
-                            THEN coalesce(json_extract(params, '$.relativeWorkspacePath'),
-                                          json_extract(params, '$.targetFile'))
-                       END AS path
-                FROM (
-                    SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
-                           json_extract(value, '$.toolFormerData.name') AS tool,
-                           json_extract(value, '$.toolFormerData.params') AS params
-                    FROM cursorDiskKV
-                    WHERE \(Self.bubblesInWindow)
-                      AND json_extract(value, '$.toolFormerData.name') IS NOT NULL
-                )
-            )
-            WHERE path IS NOT NULL
+            SELECT conversation, tool, path, count(*)
+            FROM temp.digest_bubbles
+            WHERE tool IS NOT NULL AND path IS NOT NULL
             GROUP BY conversation, tool, path
-            """, [since]) { row in
+            """) { row in
             guard let tool = row.text(1), let path = row.text(2) else { return }
             let ext = Self.extension(of: path)
             let count = row.int(3)
@@ -444,7 +452,7 @@ public final class ActivityCatalog {
     }
 
     private func conversations(
-        _ database: ReadOnlyDatabase, since: String, fileTypes: [String: [String: Int]]
+        _ database: ReadOnlyDatabase, fileTypes: [String: [String: Int]]
     ) -> [String: ConversationActivity] {
         // `bubbleId:<composerId>:<bubbleId>` — take the middle field. "bubbleId:" is nine
         // characters, so the id starts at ten.
@@ -453,15 +461,14 @@ public final class ActivityCatalog {
         var first: [String: Date] = [:]
         var last: [String: Date] = [:]
         database.query("""
-            SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
-                   sum(\(Self.isPrompt)),
-                   sum(json_extract(value, '$.toolFormerData.name') IS NOT NULL),
-                   min(json_extract(value, '$.createdAt')),
-                   max(json_extract(value, '$.createdAt'))
-            FROM cursorDiskKV
-            WHERE \(Self.bubblesInWindow)
+            SELECT conversation,
+                   sum(isPrompt),
+                   sum(tool IS NOT NULL),
+                   min(createdAt),
+                   max(createdAt)
+            FROM temp.digest_bubbles
             GROUP BY conversation
-            """, [since]) { row in
+            """) { row in
             guard let id = row.text(0), !id.isEmpty else { return }
             prompts[id] = row.int(1)
             toolCalls[id] = row.int(2)
@@ -473,14 +480,11 @@ public final class ActivityCatalog {
         // so the volume that crosses into Swift stays in the hundreds.
         var toolsPerConversation: [String: [String: Int]] = [:]
         database.query("""
-            SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
-                   json_extract(value, '$.toolFormerData.name') AS tool,
-                   count(*)
-            FROM cursorDiskKV
-            WHERE \(Self.bubblesInWindow)
-              AND json_extract(value, '$.toolFormerData.name') IS NOT NULL
+            SELECT conversation, tool, count(*)
+            FROM temp.digest_bubbles
+            WHERE tool IS NOT NULL
             GROUP BY conversation, tool
-            """, [since]) { row in
+            """) { row in
             guard let id = row.text(0), !id.isEmpty, let tool = row.text(1) else { return }
             toolsPerConversation[id, default: [:]][tool] = row.int(2)
         }
@@ -489,12 +493,11 @@ public final class ActivityCatalog {
         // for the one path that reads it, which nothing calls unless explicitly asked.
         var lengths: [String: [Int]] = [:]
         database.query("""
-            SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
-                   length(json_extract(value, '$.text'))
-            FROM cursorDiskKV
-            WHERE \(Self.bubblesInWindow) AND \(Self.isPrompt)
-            ORDER BY json_extract(value, '$.createdAt')
-            """, [since]) { row in
+            SELECT conversation, length(text)
+            FROM temp.digest_bubbles
+            WHERE isPrompt
+            ORDER BY createdAt
+            """) { row in
             guard let id = row.text(0), !id.isEmpty else { return }
             lengths[id, default: []].append(row.int(1))
         }
@@ -561,7 +564,7 @@ public final class ActivityCatalog {
         return found
     }
 
-    private func daily(_ database: ReadOnlyDatabase, since: String) -> [DayActivity] {
+    private func daily(_ database: ReadOnlyDatabase) -> [DayActivity] {
         // `createdAt` is stored in UTC, so it is shifted into the reporting zone before the
         // date is sliced off. A window spanning a daylight-saving change uses the offset in
         // force when the report runs, which can misfile a single boundary hour — the
@@ -569,14 +572,13 @@ public final class ActivityCatalog {
         let shift = "\(timeZone.secondsFromGMT()) seconds"
         var days: [DayActivity] = []
         database.query("""
-            SELECT substr(datetime(json_extract(value, '$.createdAt'), ?2), 1, 10) AS day,
-                   sum(\(Self.isPrompt)),
-                   sum(json_extract(value, '$.toolFormerData.name') IS NOT NULL)
-            FROM cursorDiskKV
-            WHERE \(Self.bubblesInWindow)
+            SELECT substr(datetime(createdAt, ?1), 1, 10) AS day,
+                   sum(isPrompt),
+                   sum(tool IS NOT NULL)
+            FROM temp.digest_bubbles
             GROUP BY day
             ORDER BY day
-            """, [since, shift]) { row in
+            """, [shift]) { row in
             guard let text = row.text(0), let day = self.calendarDay.date(from: text) else { return }
             days.append(DayActivity(day: day, prompts: row.int(1), toolCalls: row.int(2)))
         }

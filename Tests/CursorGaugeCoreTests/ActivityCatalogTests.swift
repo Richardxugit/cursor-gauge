@@ -384,6 +384,117 @@ final class ActivityCatalogTests: XCTestCase {
         XCTAssertTrue(daily[0].day < daily[1].day, "chronological, so a chart can plot it")
     }
 
+    // MARK: - Whole-digest equivalence
+
+    func testDigestMatchesFullActivitySnapshotAcrossAllAggregationBranches() throws {
+        let feature = "/ko-feature add a button"
+        let path = "/Users/pxu/project/File.swift"
+        let multilineFeature = "/ko-feature\nagain"
+        let plain = "plain question"
+        let review = "/ko-review"
+        let lengths = [feature, path, multilineFeature, plain, review].map(\.count)
+
+        try makeDatabase(
+            bubbles: [
+                promptBubble(conversation: "c1", text: feature, at: "2026-08-03T08:00:00.000Z"),
+                promptBubble(conversation: "c1", text: path, at: "2026-08-03T08:01:00.000Z"),
+                toolBubble(conversation: "c1", tool: "read_file_v2",
+                           params: #"{"targetFile":"/repo/Sources/App.swift"}"#,
+                           at: "2026-08-03T09:00:00.000Z"),
+                toolBubble(conversation: "c1", tool: "edit_file_v2", status: "error",
+                           params: #"{"relativeWorkspacePath":"/repo/Sources/App.swift"}"#,
+                           at: "2026-08-03T10:00:00.000Z"),
+                toolBubble(conversation: "c1", tool: "edit_file_v2", decision: "rejected",
+                           params: #"{"relativeWorkspacePath":"/repo/README.md"}"#,
+                           at: "2026-08-03T11:00:00.000Z"),
+                toolBubble(conversation: "c1", tool: "run_terminal_command_v2", status: "cancelled",
+                           at: "2026-08-03T12:00:00.000Z"),
+                promptBubble(conversation: "c1", text: multilineFeature,
+                             at: "2026-08-04T08:00:00.000Z"),
+                promptBubble(conversation: "c1", text: plain, at: "2026-08-04T08:01:00.000Z"),
+                toolBubble(conversation: "c1", tool: "read_file_v2",
+                           params: #"{"targetFile":"/repo/README.md"}"#,
+                           at: "2026-08-04T09:00:00.000Z"),
+                toolBubble(conversation: "c1", tool: "create_file", decision: "rejected",
+                           params: #"{"relativeWorkspacePath":"/repo/New.txt"}"#,
+                           at: "2026-08-04T10:00:00.000Z"),
+                promptBubble(conversation: "c2", text: review, at: "2026-08-03T08:00:00.000Z"),
+                toolBubble(conversation: "c2", tool: "mcp-atlassian-getJiraIssue", status: "error",
+                           at: "2026-08-03T09:00:00.000Z"),
+                toolBubble(conversation: "c2", tool: "read_file_v2",
+                           params: #"{"targetFile":"/repo/Makefile"}"#,
+                           at: "2026-08-04T09:00:00.000Z"),
+                promptBubble(conversation: "c2", text: "", at: "2026-08-04T10:00:00.000Z"),
+                toolBubble(conversation: "c1", tool: "read_file_v2",
+                           at: "2026-07-31T23:59:59.000Z"),
+            ],
+            headers: [
+                header(id: "c1", workspace: "/work/alpha", mode: "agent",
+                       linesAdded: 40, linesRemoved: 5, filesChanged: 3),
+                header(id: "c2", workspace: "/work/beta", mode: "chat",
+                       linesAdded: 7, linesRemoved: 2, filesChanged: 1),
+                header(id: "inactive", workspace: "/work/archive", mode: "debug",
+                       linesAdded: 9, linesRemoved: 4, filesChanged: 2),
+            ]
+        )
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func date(_ value: String) throws -> Date {
+            try XCTUnwrap(formatter.date(from: value))
+        }
+        let expected = ActivityDigest(
+            tools: [
+                ToolUsage(name: "read_file_v2", calls: 3),
+                ToolUsage(name: "edit_file_v2", calls: 2, errors: 1, rejected: 1),
+                ToolUsage(name: "create_file", calls: 1, rejected: 1),
+                ToolUsage(name: "mcp-atlassian-getJiraIssue", calls: 1, errors: 1),
+                ToolUsage(name: "run_terminal_command_v2", calls: 1, cancelled: 1),
+            ],
+            prompts: PromptStats(
+                count: 5, medianChars: lengths.sorted()[2], longestChars: lengths.max() ?? 0,
+                commands: [CommandUsage(command: "/ko-feature", count: 2),
+                           CommandUsage(command: "/ko-review", count: 1)]
+            ),
+            files: [
+                FileTypeUsage(ext: ".md", reads: 1, edits: 1),
+                FileTypeUsage(ext: ".swift", reads: 1, edits: 1),
+                FileTypeUsage(ext: "(none)", reads: 1, edits: 0),
+                FileTypeUsage(ext: ".txt", reads: 0, edits: 1),
+            ],
+            byConversation: [
+                "c1": ConversationActivity(
+                    workspace: "alpha", workspacePath: "/work/alpha", mode: "agent",
+                    prompts: 4, toolCalls: 6, linesAdded: 40, linesRemoved: 5, filesChanged: 3,
+                    tools: ["read_file_v2": 2, "edit_file_v2": 2,
+                            "run_terminal_command_v2": 1, "create_file": 1],
+                    firstActivity: try date("2026-08-03T08:00:00.000Z"),
+                    lastActivity: try date("2026-08-04T10:00:00.000Z"),
+                    promptLengths: [feature.count, path.count, multilineFeature.count, plain.count],
+                    fileTypes: [".swift": 2, ".md": 2, ".txt": 1]
+                ),
+                "c2": ConversationActivity(
+                    workspace: "beta", workspacePath: "/work/beta", mode: "chat",
+                    prompts: 1, toolCalls: 2, linesAdded: 7, linesRemoved: 2, filesChanged: 1,
+                    tools: ["mcp-atlassian-getJiraIssue": 1, "read_file_v2": 1],
+                    firstActivity: try date("2026-08-03T08:00:00.000Z"),
+                    lastActivity: try date("2026-08-04T10:00:00.000Z"),
+                    promptLengths: [review.count], fileTypes: ["(none)": 1]
+                ),
+                "inactive": ConversationActivity(
+                    workspace: "archive", workspacePath: "/work/archive", mode: "debug",
+                    linesAdded: 9, linesRemoved: 4, filesChanged: 2
+                ),
+            ],
+            daily: [
+                DayActivity(day: try date("2026-08-03T00:00:00.000Z"), prompts: 3, toolCalls: 5),
+                DayActivity(day: try date("2026-08-04T00:00:00.000Z"), prompts: 2, toolCalls: 3),
+            ]
+        )
+
+        XCTAssertEqual(digest(), expected)
+    }
+
     // MARK: - Degradation
 
     func testMissingDatabaseYieldsAnEmptyDigestRatherThanThrowing() {
