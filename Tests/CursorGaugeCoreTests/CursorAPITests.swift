@@ -55,10 +55,17 @@ private final class ScriptedSpendTransport: Transport, @unchecked Sendable {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let path = request.url?.path ?? ""
-        let body = path == "/api/dashboard/get-team-spend"
-            ? (spendBodies.isEmpty ? "{}" : spendBodies.removeFirst())
-            : other[path]?.0 ?? "{}"
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        let body: String
+        let status: Int
+        if path == "/api/dashboard/get-team-spend" {
+            body = spendBodies.isEmpty ? "{}" : spendBodies.removeFirst()
+            status = 200
+        } else {
+            (body, status) = other[path] ?? ("{}", 404)
+        }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil
+        )!
         return (Data(body.utf8), response)
     }
 }
@@ -90,7 +97,7 @@ private enum Fixture {
     /// A team the user belongs to but which publishes no limit for them.
     static let spendWithoutLimit = """
     {"teamMemberSpend":[
-      {"userId":307093031,"name":"Someone","email":"someone@example.com","role":"TEAM_ROLE_MEMBER","overallSpendCents":0}
+      {"userId":307093031,"name":"Someone","email":"someone@example.com","role":"TEAM_ROLE_MEMBER","overallSpendCents":251}
     ],
      "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000","totalMembers":403}
     """
@@ -167,35 +174,34 @@ final class CursorAPITests: XCTestCase {
 
     // MARK: Identity discovery
 
-    func testPicksTheTeamThatPublishesASpendLimit() async throws {
+    func testLimitBreaksATieOnEqualUsage() async throws {
         routeHappyPath()
-        // Both teams answer on the same path; vary by body order using a counter.
-        final class OrderedTransport: Transport, @unchecked Sendable {
-            var spendBodies: [String] = []
-            var other: [String: (String, Int)] = [:]
-            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-                let path = request.url?.path ?? ""
-                let body: String
-                if path == "/api/dashboard/get-team-spend" {
-                    body = spendBodies.isEmpty ? "{}" : spendBodies.removeFirst()
-                } else {
-                    body = other[path]?.0 ?? "{}"
-                }
-                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-                return (Data(body.utf8), response)
-            }
-        }
-        let ordered = OrderedTransport()
-        ordered.other = transport.routes
-        // bugbot is listed first and has no limit; tech-digital must still win.
-        ordered.spendBodies = [Fixture.spendWithoutLimit, Fixture.spendWithLimit]
+        let scripted = ScriptedSpendTransport()
+        scripted.other = transport.routes
+        // Both candidates have 251 cents of usage. bugbot is listed first but has no
+        // limit; tech-digital must win because it publishes one.
+        scripted.spendBodies = [Fixture.spendWithoutLimit, Fixture.spendWithLimit]
 
-        let api = CursorAPI(credentials: credentials, transport: ordered, clock: { self.now })
+        let api = CursorAPI(credentials: credentials, transport: scripted, clock: { self.now })
         let identity = try await api.discoverIdentity()
 
         XCTAssertEqual(identity.teamID, 27362705)
         XCTAssertEqual(identity.teamName, "tech-digital")
         XCTAssertEqual(identity.numericUserID, 307093031)
+    }
+
+    func testAPIOrderBreaksATieWhenBothTeamsPublishLimits() async throws {
+        routeHappyPath()
+        let scripted = ScriptedSpendTransport()
+        scripted.other = transport.routes
+        // Equal usage and limits on both sides leave API order as the decider.
+        scripted.spendBodies = [Fixture.spendWithLimit, Fixture.spend251Limit400]
+
+        let api = CursorAPI(credentials: credentials, transport: scripted, clock: { self.now })
+        let identity = try await api.discoverIdentity()
+
+        XCTAssertEqual(identity.teamID, 28605405)
+        XCTAssertEqual(identity.teamName, "bugbot")
     }
 
     /// The reported bug: bugbot (limit 200, zero spend) is listed before tech-digital
