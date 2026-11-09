@@ -76,6 +76,8 @@ public final class UsageStore {
     private let clock: () -> Date
     private let deadline: TimeInterval
     private var timer: Timer?
+    /// The interval the live timer was armed with; internal for re-arm tests.
+    private(set) var armedInterval: TimeInterval?
     private var consecutiveFailures = 0
     private var menuIsOpen = false
     private var needsDetailedRefresh = false
@@ -140,11 +142,13 @@ public final class UsageStore {
     public func stop() {
         timer?.invalidate()
         timer = nil
+        armedInterval = nil
     }
 
     private func scheduleNext() {
         timer?.invalidate()
         let interval = currentInterval()
+        armedInterval = interval
         // Repeating, deliberately. A one-shot timer re-armed from inside its own fire
         // handler makes the next poll conditional on this one finishing, so a single
         // reading that never returned left the app with no timer at all and no way back.
@@ -152,11 +156,19 @@ public final class UsageStore {
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                // refresh() re-arms at its end whenever the effective interval moved.
                 await self.refresh()
-                // Cursor may have quit or come to the front since this timer was armed.
-                if self.currentInterval() != interval { self.scheduleNext() }
             }
         }
+    }
+
+    /// Re-arms the live timer when the effective interval changed outside the
+    /// timer's own fire handler — menu open/close, team switch, manual refresh.
+    /// Without this, opening the menu could leave a quiet-backed-off timer
+    /// armed for up to 30 minutes while the open menu should poll at base rate.
+    private func rearmIfNeeded() {
+        guard timer != nil, let armed = armedInterval else { return }
+        if currentInterval() != armed { scheduleNext() }
     }
 
     func currentInterval() -> TimeInterval {
@@ -193,6 +205,7 @@ public final class UsageStore {
             needsDetailedRefresh = true
             quietStreak = 0
         }
+        rearmIfNeeded()
     }
 
     public func selectTeam(_ id: Int?) {
@@ -207,6 +220,7 @@ public final class UsageStore {
         forceNextWholeWindow = false
         quietStreak = 0
         lastSignature = nil
+        rearmIfNeeded()
     }
 
     @discardableResult
@@ -275,6 +289,7 @@ public final class UsageStore {
                 }
             }
         } while attemptWasSuperseded || (menuIsOpen && needsDetailedRefresh)
+        rearmIfNeeded()
         return succeeded
     }
 
@@ -341,7 +356,7 @@ public final class UsageStore {
         if menuIsOpen {
             quietStreak = 0
         } else if signature == lastSignature {
-            quietStreak += 1
+            quietStreak = min(quietStreak + 1, 8)
         } else {
             quietStreak = 0
         }

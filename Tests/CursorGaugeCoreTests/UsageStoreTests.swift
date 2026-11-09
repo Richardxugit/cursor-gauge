@@ -993,4 +993,43 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertTrue(store.isStale)
     }
 
+    private func settle(_ store: UsageStore) async {
+        for _ in 0..<100 {
+            if store.snapshot != nil && !store.isRefreshing { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("initial refresh did not settle")
+    }
+
+    /// Opening the menu must re-arm a quiet-backed-off timer immediately,
+    /// not whenever the old timer eventually fires.
+    func testOpeningMenuRearmsBackedOffTimerImmediately() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+        store.start()
+        await settle(store)
+        for _ in 0..<3 { await store.refresh() }
+        XCTAssertEqual(store.armedInterval, 240, "quiet refreshes re-arm the timer")
+
+        store.setMenuOpen(true)
+        XCTAssertEqual(store.armedInterval, 60, "menu open re-arms before any refresh")
+        store.stop()
+    }
+
+    /// A manual refresh that sees changed activity must re-arm the timer
+    /// back to the base cadence right away.
+    func testManualRefreshWithChangedActivityRearmsTimer() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+        store.start()
+        await settle(store)
+        for _ in 0..<3 { await store.refresh() }
+        XCTAssertEqual(store.armedInterval, 240)
+
+        transport.setSpendBody(27_362_705, Route.techDigitalNewCycleSpend)
+        await store.refresh()
+        XCTAssertEqual(store.armedInterval, 60)
+        store.stop()
+    }
+
 }

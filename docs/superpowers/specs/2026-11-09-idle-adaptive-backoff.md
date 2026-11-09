@@ -26,10 +26,14 @@ Rules:
 
 1. **Signature unchanged** on a published refresh → `quietStreak += 1`.
    Changed → `quietStreak = 0` and the new signature is stored.
-2. **Effective interval** = base cadence × 2^min(quietStreak − 2, 3),
-   i.e. the first two quiet polls are free, then ×2, ×4, ×8.
+2. **Effective interval** = base cadence × 2^clamp(quietStreak − 1, 0…3),
+   i.e. the first repeated poll is free, then ×2, ×4, ×8.
    Hard cap: **1800s** for `active`/`idle`. `dormant` is already 1800s and
    is left untouched (no multiplier).
+   The live timer is re-armed immediately whenever the effective interval
+   changes, including from non-timer paths (menu open/close, team switch,
+   manual or wake refreshes) — `refresh()` re-arms at its end, and
+   `setMenuOpen`/`selectTeam` re-arm directly.
 3. **Menu open** → quiet backoff never applies; the open menu keeps the
    base cadence so the user always sees fresh data. Opening the menu also
    resets the streak.
