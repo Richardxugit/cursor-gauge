@@ -49,6 +49,25 @@ private enum Route {
            "conversationId":"session-1","isHeadless":false}]}
         """,
     ]
+
+    static let twoTeams = """
+    {"teams":[
+      {"name":"bugbot","id":28605405,"role":"TEAM_ROLE_MEMBER","isEnterprise":true},
+      {"name":"tech-digital","id":27362705,"role":"TEAM_ROLE_MEMBER","isEnterprise":true}
+    ]}
+    """
+
+    static let bugbotSpend = """
+    {"teamMemberSpend":[{"userId":307093031,"overallSpendCents":0,
+      "monthlyLimitDollars":200,"effectivePerUserLimitDollars":200}],
+     "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000"}
+    """
+
+    static let techDigitalSpend = """
+    {"teamMemberSpend":[{"userId":307093031,"overallSpendCents":4578,
+      "monthlyLimitDollars":200,"effectivePerUserLimitDollars":200}],
+     "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000"}
+    """
 }
 
 /// Holds one request until the test releases it, and lets the test wait for its arrival.
@@ -109,6 +128,8 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
     private var stallNextEvent = false
     private var nextEventGate: EventGate?
     private var recorded: [URLRequest] = []
+    private var teamsBody: String?
+    private var spendBodies: [Int: String] = [:]
 
     var stalling: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _stalling }
@@ -131,6 +152,27 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
         }
     }
 
+    func teamIDs(forPath path: String) -> [Int] {
+        requests.compactMap { request in
+            guard request.url?.path == path,
+                  let body = request.httpBody,
+                  let json = try? JSONSerialization.jsonObject(with: body),
+                  let object = json as? [String: Any]
+            else { return nil }
+            return object["teamId"] as? Int
+        }
+    }
+
+    func useTwoTeams() {
+        lock.withLock {
+            teamsBody = Route.twoTeams
+            spendBodies = [
+                28605405: Route.bugbotSpend,
+                27362705: Route.techDigitalSpend,
+            ]
+        }
+    }
+
     func stallNextEventRequest() {
         lock.lock()
         stallNextEvent = true
@@ -145,7 +187,7 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let path = request.url?.path ?? ""
-        let (shouldStall, gate) = lock.withLock {
+        let (shouldStall, gate, teamsBody, spendBodies) = lock.withLock {
             recorded.append(request)
             let shouldStall = _stalling || (path == Self.eventsPath && stallNextEvent)
             let gate = path == Self.eventsPath ? nextEventGate : nil
@@ -153,7 +195,7 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
                 stallNextEvent = false
                 nextEventGate = nil
             }
-            return (shouldStall, gate)
+            return (shouldStall, gate, teamsBody, spendBodies)
         }
 
         if shouldStall {
@@ -162,7 +204,17 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
             try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
         }
         await gate?.wait()
-        let body = Route.all[path] ?? "{}"
+        var body = Route.all[path] ?? "{}"
+        if path == "/api/dashboard/teams", let teamsBody {
+            body = teamsBody
+        }
+        if path == "/api/dashboard/get-team-spend",
+           let data = request.httpBody,
+           let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let teamID = object["teamId"] as? Int,
+           let spendBody = spendBodies[teamID] {
+            body = spendBody
+        }
         let response = HTTPURLResponse(
             url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
         )!
@@ -314,4 +366,86 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(transport.eventPageSizes, [500, 1, 500])
         XCTAssertEqual(store.status, .ready)
     }
+
+    func testAutoRefreshPicksMostUsageAndExposesTeamOptions() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+
+        let succeeded = await store.refresh()
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 4578)
+        XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+        XCTAssertEqual(store.teamOptions, [
+            CursorAPI.TeamOption(id: 28605405, name: "bugbot"),
+            CursorAPI.TeamOption(id: 27362705, name: "tech-digital"),
+        ])
+    }
+
+    func testPreferredTeamIsUsedForSnapshotAndUsageRequests() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+        store.preferredTeamID = 28605405
+
+        let succeeded = await store.refresh()
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
+        XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+        XCTAssertEqual(
+            transport.teamIDs(forPath: "/api/dashboard/get-aggregated-usage-events"),
+            [28605405, 28605405]
+        )
+        XCTAssertEqual(
+            transport.teamIDs(forPath: "/api/dashboard/get-filtered-usage-events"),
+            [28605405]
+        )
+    }
+
+    func testSelectTeamClearsReadingWithoutRefreshingThenLoadsBugbot() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+        let initial = await store.refresh()
+        XCTAssertTrue(initial)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 4578)
+        XCTAssertNotNil(store.metrics)
+        XCTAssertNotNil(store.lastUpdated)
+        let requestCount = transport.requests.count
+
+        store.selectTeam(28605405)
+
+        XCTAssertEqual(store.preferredTeamID, 28605405)
+        XCTAssertNil(store.snapshot)
+        XCTAssertNil(store.metrics)
+        XCTAssertNil(store.lastUpdated)
+        XCTAssertEqual(store.status, .loading)
+        XCTAssertEqual(transport.requests.count, requestCount, "selectTeam must not refresh itself")
+
+        let succeeded = await store.refresh()
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
+        XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+    }
+
+    func testSelectTeamNilThenRefreshReturnsToMostUsage() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+        store.preferredTeamID = 28605405
+        let preferred = await store.refresh()
+        XCTAssertTrue(preferred)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
+
+        store.selectTeam(nil)
+        let succeeded = await store.refresh()
+
+        XCTAssertTrue(succeeded)
+        XCTAssertNil(store.preferredTeamID)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 4578)
+        XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+    }
+
 }

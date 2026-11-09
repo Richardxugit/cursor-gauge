@@ -56,6 +56,8 @@ public final class UsageStore {
     }
 
     public private(set) var status: Status = .loading
+    public var preferredTeamID: Int?
+    public var teamOptions: [CursorAPI.TeamOption] { api.teamOptions }
     public private(set) var snapshot: UsageSnapshot?
     public private(set) var metrics: UsageMetrics?
     public private(set) var lastUpdated: Date?
@@ -162,6 +164,14 @@ public final class UsageStore {
         if open { needsDetailedRefresh = true }
     }
 
+    public func selectTeam(_ id: Int?) {
+        preferredTeamID = id
+        snapshot = nil
+        metrics = nil
+        lastUpdated = nil
+        status = .loading
+    }
+
     @discardableResult
     public func refresh() async -> Bool {
         guard !isRefreshing else { return false }
@@ -175,7 +185,7 @@ public final class UsageStore {
             succeeded = false
             do {
                 let fresh = try await withDeadline(deadline) { [api] in
-                    try await api.fetchSnapshot(detail: detail)
+                    try await api.fetchSnapshot(detail: detail, preferredTeamID: self.preferredTeamID)
                 }
                 // A summary that finishes after the menu opens must not erase visible details.
                 if detail == .full || !menuIsOpen {
