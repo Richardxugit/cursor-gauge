@@ -493,6 +493,13 @@ public final class CursorAPI {
         )
     }
 
+    /// Names (and subagent parents) for conversation ids, from the same local catalogs a
+    /// snapshot fetch uses. Exposed so the store can rebuild session trees from a merged
+    /// event set without reaching into the API's private naming.
+    public func sessionRecords(for ids: [String]) -> [String: SessionRecord] {
+        naming.records(for: ids)
+    }
+
     private func aggregate(
         identity: AccountIdentity, from start: Date, to end: Date
     ) async throws -> AggregatedUsageResponse {

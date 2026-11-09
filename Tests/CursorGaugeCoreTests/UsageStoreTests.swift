@@ -68,6 +68,33 @@ private enum Route {
       "monthlyLimitDollars":200,"effectivePerUserLimitDollars":200}],
      "subscriptionCycleStart":"1785542400000","nextCycleStart":"1788220800000"}
     """
+
+    static let eventOne = """
+    {"totalUsageEventsCount":1,"usageEventsDisplay":[
+      {"timestamp":"1785658176745","model":"composer-2.5-fast","chargedCents":12.5,
+       "conversationId":"session-1","isHeadless":false}]}
+    """
+
+    /// One event overlapping the previous window with a changed cost, plus a new one.
+    static let updatedPlusNew = """
+    {"totalUsageEventsCount":2,"usageEventsDisplay":[
+      {"timestamp":"1785658176745","model":"composer-2.5-fast","chargedCents":99.9,
+       "conversationId":"session-1","isHeadless":false},
+      {"timestamp":"1785658476745","model":"composer-2.5-fast","chargedCents":5.0,
+       "conversationId":"session-2","isHeadless":false}]}
+    """
+
+    static let eventTwo = """
+    {"totalUsageEventsCount":1,"usageEventsDisplay":[
+      {"timestamp":"1785658476745","model":"composer-2.5-fast","chargedCents":5.0,
+       "conversationId":"session-2","isHeadless":false}]}
+    """
+
+    static let techDigitalNewCycleSpend = """
+    {"teamMemberSpend":[{"userId":307093031,"overallSpendCents":5000,
+      "monthlyLimitDollars":200,"effectivePerUserLimitDollars":200}],
+     "subscriptionCycleStart":"1788220800000","nextCycleStart":"1790899200000"}
+    """
 }
 
 /// Holds one request until the test releases it, and lets the test wait for its arrival.
@@ -131,6 +158,7 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
     private var recorded: [URLRequest] = []
     private var teamsBody: String?
     private var spendBodies: [Int: String] = [:]
+    private var eventBodies: [String] = []
 
     var stalling: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _stalling }
@@ -150,6 +178,19 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
                   let object = json as? [String: Any]
             else { return nil }
             return object["pageSize"] as? Int
+        }
+    }
+
+    /// The `startDate` of every recorded events request, in epoch milliseconds.
+    var eventStartDates: [Int64] {
+        requests.compactMap { request in
+            guard request.url?.path == Self.eventsPath,
+                  let body = request.httpBody,
+                  let json = try? JSONSerialization.jsonObject(with: body),
+                  let object = json as? [String: Any],
+                  let start = object["startDate"] as? String
+            else { return nil }
+            return Int64(start)
         }
     }
 
@@ -197,19 +238,26 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
         lock.withLock { teamsBody = body }
     }
 
+    /// Serves the given bodies in order on the next events requests; defaults when empty.
+    func setEventBodies(_ bodies: [String]) {
+        lock.withLock { eventBodies = bodies }
+    }
+
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let path = request.url?.path ?? ""
-        let (shouldStall, gate, shouldFail, teamsBody, spendBodies) = lock.withLock {
+        let (shouldStall, gate, shouldFail, teamsBody, spendBodies, eventBody) = lock.withLock {
             recorded.append(request)
             let shouldStall = _stalling || (path == Self.eventsPath && stallNextEvent)
             let gate = path == Self.eventsPath ? nextEventGate : nil
             let shouldFail = path == Self.eventsPath && failNextEvent
+            var eventBody: String?
             if path == Self.eventsPath {
                 stallNextEvent = false
                 nextEventGate = nil
                 failNextEvent = false
+                eventBody = eventBodies.isEmpty ? nil : eventBodies.removeFirst()
             }
-            return (shouldStall, gate, shouldFail, teamsBody, spendBodies)
+            return (shouldStall, gate, shouldFail, teamsBody, spendBodies, eventBody)
         }
 
         await gate?.wait()
@@ -220,6 +268,9 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
         }
         if shouldFail { throw URLError(.networkConnectionLost) }
         var body = Route.all[path] ?? "{}"
+        if path == Self.eventsPath, let eventBody {
+            body = eventBody
+        }
         if path == "/api/dashboard/teams", let teamsBody {
             body = teamsBody
         }
@@ -666,6 +717,78 @@ final class UsageStoreTests: XCTestCase {
 
         XCTAssertFalse(failed)
         XCTAssertEqual(store.teamOptions, latestOptions)
+    }
+
+    // MARK: - Incremental event feed
+
+    func testFirstFullRefreshFetchesTheWholeWindowAndStoresItsEvents() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+
+        store.setMenuOpen(true)
+        let succeeded = await store.refresh()
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(transport.eventStartDates, [1_785_542_400_000])
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
+        XCTAssertEqual(store.snapshot?.events.first?.cents, 12.5)
+    }
+
+    func testTopUpFetchesTheOverlapWindowAndMergesUpdatesAndNewEvents() async {
+        let transport = SwitchableTransport()
+        transport.setEventBodies([Route.eventOne, Route.updatedPlusNew])
+        let store = makeStore(transport: transport, deadline: 5)
+
+        store.setMenuOpen(true)
+        await store.refresh()
+        await store.refresh()
+
+        // Full window first, then the overlap window from the newest known event.
+        XCTAssertEqual(transport.eventStartDates, [1_785_542_400_000, 1_785_657_576_745])
+        let events = store.snapshot?.events ?? []
+        XCTAssertEqual(events.count, 2)
+        // The overlapping event's fresh row wins.
+        XCTAssertEqual(events.first { $0.conversationID == "session-1" }?.cents, 99.9)
+        XCTAssertEqual(events.first { $0.conversationID == "session-2" }?.cents, 5.0)
+        XCTAssertEqual(store.snapshot?.lastActivity?.timeIntervalSince1970, 1_785_658_476.745)
+    }
+
+    func testSelectTeamClearsMergedEventsAndTheNextFetchIsAWholeWindow() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 5)
+
+        store.setMenuOpen(true)
+        await store.refresh()
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
+
+        transport.setEventBodies([Route.eventTwo])
+        store.selectTeam(28605405)
+        XCTAssertNil(store.snapshot)
+
+        await store.refresh()
+
+        // The bugbot reading must be a whole-window fetch and show only bugbot's events.
+        XCTAssertEqual(transport.eventStartDates.last, 1_785_542_400_000)
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-2"])
+        XCTAssertEqual(transport.teamIDs(forPath: "/api/dashboard/get-filtered-usage-events"), [27_362_705, 28_605_405])
+    }
+
+    func testSummaryPollsNeverMergeEventsAndTheNextFullReadIsWholeWindow() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+
+        await store.refresh()
+
+        XCTAssertEqual(transport.eventPageSizes, [1])
+        XCTAssertEqual(store.snapshot?.events, [])
+
+        store.setMenuOpen(true)
+        await store.refresh()
+
+        // A summary never established a merge base, so the full read starts from the cycle.
+        // Two requests total: the summary poll, then the full read — both whole-window.
+        XCTAssertEqual(transport.eventStartDates, [1_785_542_400_000, 1_785_542_400_000])
     }
 
 }

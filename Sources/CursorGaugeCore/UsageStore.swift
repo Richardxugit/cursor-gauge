@@ -80,6 +80,10 @@ public final class UsageStore {
     private var menuIsOpen = false
     private var needsDetailedRefresh = false
     private var selectionGeneration = 0
+    /// The merged event set backing the published full snapshot, per selection.
+    private var mergedEvents: [SessionEvent] = []
+    /// The cycle the merge was built against, so a rollover is spotted after the fetch.
+    private var mergedCycleStart: Date?
 
     public init(
         credentials: CredentialsProviding,
@@ -173,6 +177,8 @@ public final class UsageStore {
         metrics = nil
         lastUpdated = nil
         status = .loading
+        mergedEvents = []
+        mergedCycleStart = nil
     }
 
     @discardableResult
@@ -190,16 +196,30 @@ public final class UsageStore {
             if detail == .full { needsDetailedRefresh = false }
             attemptWasSuperseded = false
             succeeded = false
+            // A full read tops up from the newest merged event; an empty merge base reads
+            // the whole window.
+            let eventsSince: Date? =
+                detail == .full && !mergedEvents.isEmpty ? mergedEvents.map(\.timestamp).max() : nil
             do {
                 let fresh = try await withDeadline(deadline) { [api] in
-                    try await api.fetchSnapshot(detail: detail, preferredTeamID: preferredTeamID)
+                    try await api.fetchSnapshot(
+                        detail: detail, preferredTeamID: preferredTeamID, eventsSince: eventsSince
+                    )
                 }
                 if selectionGeneration != generation {
                     attemptWasSuperseded = true
                 } else {
                     // A summary that finishes after the menu opens must not erase visible details.
                     if detail == .full || !menuIsOpen {
-                        snapshot = fresh
+                        let published: UsageSnapshot
+                        if detail == .full {
+                            mergedEvents = mergedFeed(from: fresh)
+                            mergedCycleStart = fresh.cycleStart
+                            published = rebuilt(fresh, events: mergedEvents)
+                        } else {
+                            published = fresh
+                        }
+                        snapshot = published
                         lastUpdated = fresh.capturedAt
                         status = .ready
                         consecutiveFailures = 0
@@ -224,6 +244,50 @@ public final class UsageStore {
             }
         } while attemptWasSuperseded || (menuIsOpen && needsDetailedRefresh)
         return succeeded
+    }
+
+    /// Folds a fetched feed into the merged set. Replaced outright when the cycle rolled
+    /// over or the feed was truncated — both make the previous set an unreliable base.
+    private func mergedFeed(from fresh: UsageSnapshot) -> [SessionEvent] {
+        guard mergedCycleStart == fresh.cycleStart, !fresh.sessionsTruncated else {
+            return fresh.events
+        }
+        var byKey: [EventKey: SessionEvent] = [:]
+        for event in mergedEvents { byKey[EventKey(event)] = event }
+        for event in fresh.events { byKey[EventKey(event)] = event }
+        return byKey.values.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    /// Rebuilds the presentable snapshot over a merged event set.
+    private func rebuilt(_ fresh: UsageSnapshot, events: [SessionEvent]) -> UsageSnapshot {
+        UsageSnapshot(
+            settledSpendCents: fresh.settledSpendCents,
+            liveSpendCents: fresh.liveSpendCents,
+            limitDollars: fresh.limitDollars,
+            cycleStart: fresh.cycleStart,
+            cycleEnd: fresh.cycleEnd,
+            todayCents: fresh.todayCents,
+            models: fresh.models,
+            lastActivity: events.map(\.timestamp).max(),
+            capturedAt: fresh.capturedAt,
+            sessions: SessionBreakdown.build(
+                events: events,
+                catalog: api.sessionRecords(for: Array(Set(events.compactMap(\.conversationID))))
+            ),
+            sessionsTruncated: fresh.sessionsTruncated,
+            events: events
+        )
+    }
+
+    /// One billed request's identity for merge deduplication.
+    private struct EventKey: Hashable {
+        let conversationID: String?
+        let timestamp: Date
+
+        init(_ event: SessionEvent) {
+            conversationID = event.conversationID
+            timestamp = event.timestamp
+        }
     }
 
     /// Runs `operation`, abandoning it after `seconds`.
