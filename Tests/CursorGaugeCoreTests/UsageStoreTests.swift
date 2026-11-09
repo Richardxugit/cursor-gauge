@@ -307,7 +307,12 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
 
 @MainActor
 final class UsageStoreTests: XCTestCase {
-    private func makeStore(transport: Transport, deadline: TimeInterval) -> UsageStore {
+    private func makeStore(
+        transport: Transport,
+        deadline: TimeInterval,
+        activity: CursorActivityObserving = StubActivity(),
+        clock: @escaping () -> Date = Date.init
+    ) -> UsageStore {
         let credentials = StubCredentials()
         return UsageStore(
             credentials: credentials,
@@ -316,8 +321,9 @@ final class UsageStoreTests: XCTestCase {
                 transport: transport,
                 naming: StubNaming()
             ),
-            activity: StubActivity(),
-            deadline: deadline
+            activity: activity,
+            deadline: deadline,
+            clock: clock
         )
     }
 
@@ -884,6 +890,107 @@ final class UsageStoreTests: XCTestCase {
             1_785_542_400_000, 1_785_657_576_745, 1_785_657_576_745,
         ])
         XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
+    }
+
+    // MARK: - Quiet backoff (P3)
+
+    /// Unchanged readings in the background must stretch the poll interval:
+    /// the first repeat is free, then x2, x4, x8.
+    func testQuietPollsBackOffExponentially() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 60, "first publish sets the signature")
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 60, "one unchanged poll is still free")
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 120)
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 240)
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 480)
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 480, "exponent is capped at x8")
+    }
+
+    /// The idle cadence would overshoot 30 minutes at x8; clamp it there.
+    func testQuietBackoffIsCappedAtThirtyMinutes() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(
+            transport: transport, deadline: 5,
+            activity: StubActivity(isCursorRunning: true, secondsSinceCursorFrontmost: 400)
+        )
+        for _ in 0..<4 { await store.refresh() }
+        XCTAssertEqual(store.currentInterval(), 1_200)
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 1_800)
+    }
+
+    /// Cursor not running already polls at the slowest cadence; leave it alone.
+    func testDormantCadenceIsNotMultiplied() async {
+        let store = makeStore(
+            transport: SwitchableTransport(), deadline: 5,
+            activity: StubActivity(isCursorRunning: false, secondsSinceCursorFrontmost: nil)
+        )
+        for _ in 0..<6 { await store.refresh() }
+        XCTAssertEqual(store.currentInterval(), 1_800)
+    }
+
+    /// Any real change returns the next poll to the base cadence immediately.
+    func testChangedActivityResetsTheBackoff() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+        for _ in 0..<3 { await store.refresh() }
+        XCTAssertEqual(store.currentInterval(), 120)
+
+        transport.setSpendBody(27_362_705, Route.techDigitalNewCycleSpend)
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 60)
+    }
+
+    /// An open menu always polls at the base cadence, and opening it resets
+    /// the streak so closing it again starts fresh.
+    func testMenuOpenIgnoresAndResetsQuietBackoff() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+        for _ in 0..<3 { await store.refresh() }
+        XCTAssertEqual(store.currentInterval(), 120)
+
+        store.setMenuOpen(true)
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 60, "open menu keeps the base cadence")
+
+        store.setMenuOpen(false)
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 60, "opening the menu reset the streak")
+    }
+
+    /// Failure backoff and quiet backoff must never compound.
+    func testFailureBackoffDoesNotCompoundWithQuietBackoff() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+        for _ in 0..<4 { await store.refresh() }
+        XCTAssertEqual(store.currentInterval(), 240)
+
+        transport.failNextEventRequest()
+        await store.refresh()
+        XCTAssertEqual(store.currentInterval(), 120, "failure backoff only: 60 x 2")
+    }
+
+    /// A reading published under a backed-off interval must not be flagged
+    /// stale between polls just because it is older than the base cadence.
+    func testStalenessFollowsTheEffectiveInterval() async {
+        let transport = SwitchableTransport()
+        var now = Date()
+        let store = makeStore(transport: transport, deadline: 5, clock: { now })
+        for _ in 0..<4 { await store.refresh() }
+        XCTAssertEqual(store.currentInterval(), 240)
+
+        now = now.addingTimeInterval(200) // older than 60 x 2.5, younger than 240 x 2.5
+        XCTAssertFalse(store.isStale)
+        now = now.addingTimeInterval(1_000)
+        XCTAssertTrue(store.isStale)
     }
 
 }

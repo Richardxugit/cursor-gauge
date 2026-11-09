@@ -90,6 +90,13 @@ public final class UsageStore {
     private var forceNextWholeWindow = false
     /// Every Nth published full refresh re-reads the entire window from scratch.
     private static let reconciliationEvery = 10
+    /// Consecutive published refreshes whose activity signature did not change.
+    private var quietStreak = 0
+    /// The signature of the last published snapshot, for quiet detection.
+    private var lastSignature: ActivitySignature?
+    /// The poll interval in effect at the last publish; staleness is measured
+    /// against it so a quiet-backed-off reading is not flagged between polls.
+    private var lastPublishInterval = RefreshCadence.idle.rawValue
 
     public init(
         credentials: CredentialsProviding,
@@ -152,7 +159,7 @@ public final class UsageStore {
         }
     }
 
-    private func currentInterval() -> TimeInterval {
+    func currentInterval() -> TimeInterval {
         let base: RefreshCadence
         if !activity.isCursorRunning {
             base = .dormant
@@ -163,7 +170,15 @@ public final class UsageStore {
         }
         cadence = base
 
-        guard consecutiveFailures > 0 else { return base.rawValue }
+        guard consecutiveFailures > 0 else {
+            // Quiet backoff: repeated polls that change nothing stretch the
+            // background interval. The open menu always keeps the base cadence,
+            // dormant is already the slowest cadence, and the two backoffs never
+            // compound (failures return above).
+            guard !menuIsOpen, base != .dormant else { return base.rawValue }
+            let exponent = max(0, min(quietStreak - 1, 3))
+            return min(base.rawValue * pow(2, Double(exponent)), 1_800)
+        }
         // Back off on repeated failure so a broken endpoint doesn't hammer cursor.com,
         // but never stall longer than 15 minutes or recovery feels dead.
         let backoff = base.rawValue * pow(2, Double(min(consecutiveFailures, 4)))
@@ -174,7 +189,10 @@ public final class UsageStore {
 
     public func setMenuOpen(_ open: Bool) {
         menuIsOpen = open
-        if open { needsDetailedRefresh = true }
+        if open {
+            needsDetailedRefresh = true
+            quietStreak = 0
+        }
     }
 
     public func selectTeam(_ id: Int?) {
@@ -187,6 +205,8 @@ public final class UsageStore {
         mergedCycleStart = nil
         fullPublishCount = 0
         forceNextWholeWindow = false
+        quietStreak = 0
+        lastSignature = nil
     }
 
     @discardableResult
@@ -236,6 +256,7 @@ public final class UsageStore {
                         consecutiveFailures = 0
                         teamOptions = api.teamOptions
                         recomputeMetrics()
+                        updateQuietState(with: published)
                     }
                     succeeded = true
                 }
@@ -313,6 +334,39 @@ public final class UsageStore {
         }
     }
 
+    /// Folds a published snapshot into the quiet-streak bookkeeping. An open
+    /// menu counts as engagement: the streak never grows while it is open.
+    private func updateQuietState(with published: UsageSnapshot) {
+        let signature = ActivitySignature(published)
+        if menuIsOpen {
+            quietStreak = 0
+        } else if signature == lastSignature {
+            quietStreak += 1
+        } else {
+            quietStreak = 0
+        }
+        lastSignature = signature
+        lastPublishInterval = currentInterval()
+    }
+
+    /// The user-visible activity fields; two snapshots with the same signature
+    /// mean a poll taught us nothing.
+    private struct ActivitySignature: Equatable {
+        let settledSpendCents: Double
+        let liveSpendCents: Double
+        let todayCents: Double
+        let lastActivity: Date?
+        let eventsCount: Int
+
+        init(_ snapshot: UsageSnapshot) {
+            settledSpendCents = snapshot.settledSpendCents
+            liveSpendCents = snapshot.liveSpendCents
+            todayCents = snapshot.todayCents
+            lastActivity = snapshot.lastActivity
+            eventsCount = snapshot.events.count
+        }
+    }
+
     /// Runs `operation`, abandoning it after `seconds`.
     ///
     /// This is what stops `isRefreshing` latching: that guard makes every other way into
@@ -354,7 +408,7 @@ public final class UsageStore {
     /// would be misleading.
     public var isStale: Bool {
         guard let lastUpdated else { return true }
-        return clock().timeIntervalSince(lastUpdated) > cadence.rawValue * 2.5
+        return clock().timeIntervalSince(lastUpdated) > lastPublishInterval * 2.5
     }
 
     public var menuBarImage: NSImage {
