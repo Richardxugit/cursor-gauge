@@ -57,7 +57,7 @@ public final class UsageStore {
 
     public private(set) var status: Status = .loading
     public var preferredTeamID: Int?
-    public var teamOptions: [CursorAPI.TeamOption] { api.teamOptions }
+    public private(set) var teamOptions: [CursorAPI.TeamOption] = []
     public private(set) var snapshot: UsageSnapshot?
     public private(set) var metrics: UsageMetrics?
     public private(set) var lastUpdated: Date?
@@ -77,6 +77,7 @@ public final class UsageStore {
     private var consecutiveFailures = 0
     private var menuIsOpen = false
     private var needsDetailedRefresh = false
+    private var selectionGeneration = 0
 
     public init(
         credentials: CredentialsProviding,
@@ -166,6 +167,7 @@ public final class UsageStore {
 
     public func selectTeam(_ id: Int?) {
         preferredTeamID = id
+        selectionGeneration += 1
         snapshot = nil
         metrics = nil
         lastUpdated = nil
@@ -179,34 +181,47 @@ public final class UsageStore {
         defer { isRefreshing = false }
 
         var succeeded = false
+        var attemptWasSuperseded = false
         repeat {
+            let generation = selectionGeneration
+            let preferredTeamID = self.preferredTeamID
             let detail: CursorAPI.SnapshotDetail = menuIsOpen ? .full : .summary
             if detail == .full { needsDetailedRefresh = false }
+            attemptWasSuperseded = false
             succeeded = false
             do {
                 let fresh = try await withDeadline(deadline) { [api] in
-                    try await api.fetchSnapshot(detail: detail, preferredTeamID: self.preferredTeamID)
+                    try await api.fetchSnapshot(detail: detail, preferredTeamID: preferredTeamID)
                 }
-                // A summary that finishes after the menu opens must not erase visible details.
-                if detail == .full || !menuIsOpen {
-                    snapshot = fresh
-                    lastUpdated = fresh.capturedAt
-                    status = .ready
-                    consecutiveFailures = 0
-                    recomputeMetrics()
+                if selectionGeneration != generation {
+                    attemptWasSuperseded = true
+                } else {
+                    // A summary that finishes after the menu opens must not erase visible details.
+                    if detail == .full || !menuIsOpen {
+                        snapshot = fresh
+                        lastUpdated = fresh.capturedAt
+                        status = .ready
+                        consecutiveFailures = 0
+                        teamOptions = api.teamOptions
+                        recomputeMetrics()
+                    }
+                    succeeded = true
                 }
-                succeeded = true
             } catch {
-                consecutiveFailures += 1
-                if let apiError = error as? APIError, apiError.isRecoverableByReauth {
-                    // Token may have rotated under us; drop the cached identity too, since a
-                    // re-auth can mean a different account.
-                    credentials.invalidate()
-                    api.forgetIdentity()
+                if selectionGeneration != generation {
+                    attemptWasSuperseded = true
+                } else {
+                    consecutiveFailures += 1
+                    if let apiError = error as? APIError, apiError.isRecoverableByReauth {
+                        // Token may have rotated under us; drop the cached identity too, since a
+                        // re-auth can mean a different account.
+                        credentials.invalidate()
+                        api.forgetIdentity()
+                    }
+                    status = .failed(describe(error))
                 }
-                status = .failed(describe(error))
             }
-        } while menuIsOpen && needsDetailedRefresh
+        } while attemptWasSuperseded || (menuIsOpen && needsDetailedRefresh)
         return succeeded
     }
 

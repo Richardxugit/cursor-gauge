@@ -127,6 +127,7 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
     private var _stalling = false
     private var stallNextEvent = false
     private var nextEventGate: EventGate?
+    private var failNextEvent = false
     private var recorded: [URLRequest] = []
     private var teamsBody: String?
     private var spendBodies: [Int: String] = [:]
@@ -179,23 +180,36 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
         lock.unlock()
     }
 
-    func gateNextEventRequest() -> EventGate {
+    func gateNextEventRequest(failing: Bool = false) -> EventGate {
         let gate = EventGate()
-        lock.withLock { nextEventGate = gate }
+        lock.withLock {
+            nextEventGate = gate
+            if failing { failNextEvent = true }
+        }
         return gate
+    }
+
+    func failNextEventRequest() {
+        lock.withLock { failNextEvent = true }
+    }
+
+    func setTeamsBody(_ body: String) {
+        lock.withLock { teamsBody = body }
     }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let path = request.url?.path ?? ""
-        let (shouldStall, gate, teamsBody, spendBodies) = lock.withLock {
+        let (shouldStall, gate, shouldFail, teamsBody, spendBodies) = lock.withLock {
             recorded.append(request)
             let shouldStall = _stalling || (path == Self.eventsPath && stallNextEvent)
             let gate = path == Self.eventsPath ? nextEventGate : nil
+            let shouldFail = path == Self.eventsPath && failNextEvent
             if path == Self.eventsPath {
                 stallNextEvent = false
                 nextEventGate = nil
+                failNextEvent = false
             }
-            return (shouldStall, gate, teamsBody, spendBodies)
+            return (shouldStall, gate, shouldFail, teamsBody, spendBodies)
         }
 
         if shouldStall {
@@ -204,6 +218,7 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
             try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
         }
         await gate?.wait()
+        if shouldFail { throw URLError(.networkConnectionLost) }
         var body = Route.all[path] ?? "{}"
         if path == "/api/dashboard/teams", let teamsBody {
             body = teamsBody
@@ -446,6 +461,97 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertNil(store.preferredTeamID)
         XCTAssertEqual(store.snapshot?.settledSpendCents, 4578)
         XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+    }
+
+
+    func testTeamSwitchDuringRefreshDiscardsOldSnapshotAndLoadsNewTeam() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+        let oldTeamGate = transport.gateNextEventRequest()
+        async let refreshed = store.refresh()
+        await oldTeamGate.waitUntilStarted()
+
+        store.selectTeam(28605405)
+
+        XCTAssertNil(store.snapshot)
+        XCTAssertEqual(store.status, .loading)
+        oldTeamGate.open()
+        let succeeded = await refreshed
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.status, .ready)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
+        XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+        XCTAssertEqual(
+            transport.teamIDs(forPath: "/api/dashboard/get-aggregated-usage-events").last,
+            28605405
+        )
+        XCTAssertEqual(
+            transport.teamIDs(forPath: "/api/dashboard/get-filtered-usage-events").last,
+            28605405
+        )
+    }
+
+    func testTeamSwitchDuringRefreshDiscardsOldFailureAndLoadsNewTeam() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+        let oldTeamGate = transport.gateNextEventRequest(failing: true)
+        async let refreshed = store.refresh()
+        await oldTeamGate.waitUntilStarted()
+
+        store.selectTeam(28605405)
+        oldTeamGate.open()
+        let succeeded = await refreshed
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.status, .ready)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
+        XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+    }
+
+    func testTeamOptionsAreMainActorSnapshotsOfSuccessfulRefreshes() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+        XCTAssertTrue(store.teamOptions.isEmpty)
+
+        let initial = await store.refresh()
+
+        XCTAssertTrue(initial)
+        XCTAssertEqual(store.teamOptions, [
+            CursorAPI.TeamOption(id: 28605405, name: "bugbot"),
+            CursorAPI.TeamOption(id: 27362705, name: "tech-digital"),
+        ])
+
+        transport.setTeamsBody("""
+        {"teams":[
+          {"name":"tech-digital-latest","id":27362705,"role":"TEAM_ROLE_MEMBER","isEnterprise":true},
+          {"name":"bugbot-latest","id":28605405,"role":"TEAM_ROLE_MEMBER","isEnterprise":true}
+        ]}
+        """)
+        store.selectTeam(28605405)
+        let latest = await store.refresh()
+        let latestOptions = [
+            CursorAPI.TeamOption(id: 27362705, name: "tech-digital-latest"),
+            CursorAPI.TeamOption(id: 28605405, name: "bugbot-latest"),
+        ]
+
+        XCTAssertTrue(latest)
+        XCTAssertEqual(store.teamOptions, latestOptions)
+
+        transport.setTeamsBody("""
+        {"teams":[
+          {"name":"unpublished","id":27362705,"role":"TEAM_ROLE_MEMBER","isEnterprise":true}
+        ]}
+        """)
+        transport.failNextEventRequest()
+        store.selectTeam(27362705)
+        let failed = await store.refresh()
+
+        XCTAssertFalse(failed)
+        XCTAssertEqual(store.teamOptions, latestOptions)
     }
 
 }

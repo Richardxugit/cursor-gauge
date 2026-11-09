@@ -44,6 +44,7 @@ Files: `Sources/CursorGaugeCore/UsageStore.swift`,
   `lastUpdated`, `status = .loading`. Does **not** refresh itself; the caller (UI)
   kicks `refresh()`.
 - `public var teamOptions: [CursorAPI.TeamOption] { api.teamOptions }`.
+- Task 2b: added the selection-generation guard for superseded refreshes and stored `teamOptions` on MainActor.
 
 Tests:
 1. Refresh with `preferredTeamID = bugbot` uses bugbot's figures (assert snapshot

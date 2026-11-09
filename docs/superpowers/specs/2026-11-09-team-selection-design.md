@@ -60,11 +60,19 @@ feeds the Settings dropdown.
 
 - `UsageStore.preferredTeamID` is read on every refresh and passed to
   `fetchSnapshot(detail:preferredTeamID:)`.
-- `UsageStore.selectTeam(_ id: Int?)` sets the preference, clears the current
-  snapshot/metrics (so one team's figures are never shown as another's), and the
-  caller kicks a refresh. Clearing matters: showing stale numbers from the old team
-  while the new reading is in flight would read as the same bug this feature fixes.
-- `UsageStore.teamOptions` mirrors the API's list for the dropdown.
+- `UsageStore.selectTeam(_ id: Int?)` sets the preference, increments a selection
+  generation, and clears the current snapshot/metrics (so one team's figures are
+  never shown as another's); the caller kicks a refresh. Clearing matters: showing
+  stale numbers from the old team while the new reading is in flight would read as
+  the same bug this feature fixes.
+- Each refresh attempt captures the selection generation and current preference.
+  It publishes only if the generation is unchanged and the existing detail rule
+  permits it. If the selection changed while awaiting, the attempt's snapshot or
+  error is discarded without affecting failure state, and the loop reads again with
+  the new team.
+- `UsageStore.teamOptions` is a MainActor-owned stored snapshot of the API's list,
+  copied after each successful publishable refresh. Failed or superseded attempts
+  leave the previous snapshot unchanged.
 
 ### Settings UI
 
@@ -93,8 +101,12 @@ A "Team" section with a picker:
   events (assert the `teamId` in request bodies).
 - Identity cache: rediscovery happens when the preference changes; repeated calls
   with the same preference hit the network once.
-- `teamOptions` reflects the teams endpoint in API order.
-- Store: `selectTeam` clears the old snapshot immediately; the next refresh reads
-  the new team.
+- `teamOptions` reflects the teams endpoint in API order and is copied into a
+  MainActor-owned store snapshot only after a successful publishable refresh;
+  failed or superseded attempts preserve the previous options.
+- Store: `selectTeam` clears the old snapshot immediately and bumps the selection
+  generation. An in-flight refresh publishes only when its captured generation is
+  still current; otherwise it discards the old team's result or error and re-reads
+  with the new team.
 - Settings persists the pick across launches (UserDefaults).
 - Full suite stays green; menu bar, cadence and report behaviour are untouched.
