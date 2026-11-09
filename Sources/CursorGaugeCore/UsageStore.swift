@@ -56,7 +56,9 @@ public final class UsageStore {
     }
 
     public private(set) var status: Status = .loading
-    public var preferredTeamID: Int?
+    public var preferredTeamID: Int? {
+        didSet { selectionGeneration += 1 }
+    }
     public private(set) var teamOptions: [CursorAPI.TeamOption] = []
     public private(set) var snapshot: UsageSnapshot?
     public private(set) var metrics: UsageMetrics?
@@ -167,7 +169,6 @@ public final class UsageStore {
 
     public func selectTeam(_ id: Int?) {
         preferredTeamID = id
-        selectionGeneration += 1
         snapshot = nil
         metrics = nil
         lastUpdated = nil

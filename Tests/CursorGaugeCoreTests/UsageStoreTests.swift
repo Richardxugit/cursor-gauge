@@ -212,12 +212,12 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
             return (shouldStall, gate, shouldFail, teamsBody, spendBodies)
         }
 
+        await gate?.wait()
         if shouldStall {
             // Far longer than any deadline under test. Only cancellation should end this
             // — if the store ever waits it out, the bug is still there.
             try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
         }
-        await gate?.wait()
         if shouldFail { throw URLError(.networkConnectionLost) }
         var body = Route.all[path] ?? "{}"
         if path == "/api/dashboard/teams", let teamsBody {
@@ -253,6 +253,12 @@ final class UsageStoreTests: XCTestCase {
             activity: StubActivity(),
             deadline: deadline
         )
+    }
+
+    private func consecutiveFailures(of store: UsageStore) -> Int? {
+        Mirror(reflecting: store).children.first {
+            $0.label == "consecutiveFailures" || $0.label == "_consecutiveFailures"
+        }?.value as? Int
     }
 
     /// A reading that never arrives must be abandoned, not waited on forever.
@@ -468,15 +474,22 @@ final class UsageStoreTests: XCTestCase {
         let transport = SwitchableTransport()
         transport.useTwoTeams()
         let store = makeStore(transport: transport, deadline: 1)
+        let originalTeamOptions = store.teamOptions
         let oldTeamGate = transport.gateNextEventRequest()
         async let refreshed = store.refresh()
         await oldTeamGate.waitUntilStarted()
 
         store.selectTeam(28605405)
+        let newTeamGate = transport.gateNextEventRequest()
+        oldTeamGate.open()
+        await newTeamGate.waitUntilStarted()
 
         XCTAssertNil(store.snapshot)
         XCTAssertEqual(store.status, .loading)
-        oldTeamGate.open()
+        XCTAssertEqual(store.teamOptions, originalTeamOptions)
+        XCTAssertTrue(store.isRefreshing)
+
+        newTeamGate.open()
         let succeeded = await refreshed
 
         XCTAssertTrue(succeeded)
@@ -497,11 +510,40 @@ final class UsageStoreTests: XCTestCase {
         let transport = SwitchableTransport()
         transport.useTwoTeams()
         let store = makeStore(transport: transport, deadline: 1)
+        let originalTeamOptions = store.teamOptions
         let oldTeamGate = transport.gateNextEventRequest(failing: true)
         async let refreshed = store.refresh()
         await oldTeamGate.waitUntilStarted()
 
         store.selectTeam(28605405)
+        let newTeamGate = transport.gateNextEventRequest()
+        oldTeamGate.open()
+        await newTeamGate.waitUntilStarted()
+
+        XCTAssertNil(store.snapshot)
+        XCTAssertEqual(store.status, .loading)
+        XCTAssertEqual(store.teamOptions, originalTeamOptions)
+        XCTAssertTrue(store.isRefreshing)
+        XCTAssertEqual(consecutiveFailures(of: store), 0)
+
+        newTeamGate.open()
+        let succeeded = await refreshed
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.status, .ready)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
+        XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+    }
+
+    func testDirectTeamPreferenceWriteDuringRefreshDiscardsOldSnapshotAndLoadsNewTeam() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+        let oldTeamGate = transport.gateNextEventRequest()
+        async let refreshed = store.refresh()
+        await oldTeamGate.waitUntilStarted()
+
+        store.preferredTeamID = 28605405
         oldTeamGate.open()
         let succeeded = await refreshed
 
@@ -509,6 +551,78 @@ final class UsageStoreTests: XCTestCase {
         XCTAssertEqual(store.status, .ready)
         XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
         XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+        XCTAssertEqual(
+            transport.teamIDs(forPath: "/api/dashboard/get-aggregated-usage-events").last,
+            28605405
+        )
+        XCTAssertEqual(
+            transport.teamIDs(forPath: "/api/dashboard/get-filtered-usage-events").last,
+            28605405
+        )
+    }
+
+    func testSupersededTimeoutDoesNotFailNewTeamRefresh() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        transport.stallNextEventRequest()
+        let store = makeStore(transport: transport, deadline: 1)
+        let originalTeamOptions = store.teamOptions
+        let oldTeamGate = transport.gateNextEventRequest()
+        async let refreshed = store.refresh()
+        await oldTeamGate.waitUntilStarted()
+
+        store.selectTeam(28605405)
+        let newTeamGate = transport.gateNextEventRequest()
+        oldTeamGate.open()
+        await newTeamGate.waitUntilStarted()
+
+        XCTAssertNil(store.snapshot)
+        XCTAssertEqual(store.status, .loading)
+        XCTAssertEqual(store.teamOptions, originalTeamOptions)
+        XCTAssertTrue(store.isRefreshing)
+
+        newTeamGate.open()
+        let succeeded = await refreshed
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(store.status, .ready)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 0)
+        XCTAssertEqual(consecutiveFailures(of: store), 0)
+    }
+
+    func testRapidDoubleTeamSwitchPublishesOnlyFinalSelection() async {
+        let transport = SwitchableTransport()
+        transport.useTwoTeams()
+        let store = makeStore(transport: transport, deadline: 1)
+        let originalTeamOptions = store.teamOptions
+        let oldTeamGate = transport.gateNextEventRequest()
+        async let refreshed = store.refresh()
+        await oldTeamGate.waitUntilStarted()
+
+        store.selectTeam(28605405)
+        store.selectTeam(nil)
+        let finalSelectionGate = transport.gateNextEventRequest()
+        oldTeamGate.open()
+        await finalSelectionGate.waitUntilStarted()
+
+        XCTAssertNil(store.preferredTeamID)
+        XCTAssertNil(store.snapshot)
+        XCTAssertEqual(store.status, .loading)
+        XCTAssertEqual(store.teamOptions, originalTeamOptions)
+        XCTAssertTrue(store.isRefreshing)
+
+        finalSelectionGate.open()
+        let succeeded = await refreshed
+
+        XCTAssertTrue(succeeded)
+        XCTAssertNil(store.preferredTeamID)
+        XCTAssertEqual(store.status, .ready)
+        XCTAssertEqual(store.snapshot?.settledSpendCents, 4578)
+        XCTAssertEqual(store.snapshot?.limitDollars ?? -1, 200, accuracy: 0.001)
+        XCTAssertEqual(
+            transport.teamIDs(forPath: "/api/dashboard/get-filtered-usage-events"),
+            [27362705, 27362705]
+        )
     }
 
     func testTeamOptionsAreMainActorSnapshotsOfSuccessfulRefreshes() async {
