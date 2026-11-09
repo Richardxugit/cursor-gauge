@@ -57,6 +57,13 @@ struct MenuContent: View {
         }
         .padding(12)
         .frame(width: 268)
+        .onAppear {
+            store.setMenuOpen(true)
+            Task { await store.refresh() }
+        }
+        .onDisappear {
+            store.setMenuOpen(false)
+        }
     }
 
     // MARK: - Header
