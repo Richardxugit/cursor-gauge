@@ -42,7 +42,9 @@ enum ReportCommand {
     ) async throws -> URL {
         let credentials = TokenStore()
         let api = CursorAPI(credentials: credentials)
-        let snapshot = try await api.fetchSnapshot()
+        // An export is a point-in-time artifact and must be complete: explicitly full
+        // window, never a top-up.
+        let snapshot = try await api.fetchSnapshot(eventsSince: nil)
 
         // The activity window is the billing cycle, so both halves of every figure describe
         // the same period.
