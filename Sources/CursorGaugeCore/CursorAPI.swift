@@ -221,6 +221,11 @@ public struct UsageSnapshot: Equatable {
 // MARK: - Client
 
 public final class CursorAPI {
+    public enum SnapshotDetail {
+        case summary
+        case full
+    }
+
     private let transport: Transport
     private let credentials: CredentialsProviding
     private let clock: () -> Date
@@ -337,7 +342,7 @@ public final class CursorAPI {
 
     // MARK: Snapshot
 
-    public func fetchSnapshot() async throws -> UsageSnapshot {
+    public func fetchSnapshot(detail: SnapshotDetail = .full) async throws -> UsageSnapshot {
         let identity = try await discoverIdentity()
         let now = clock()
 
@@ -355,15 +360,41 @@ public final class CursorAPI {
         let cycleEnd = spend.nextCycleStart.map { Date(timeIntervalSince1970: $0.value / 1000) }
             ?? calendar.startOfMonth(for: calendar.date(byAdding: .month, value: 1, to: now) ?? now)
 
+        let eventPageSize: Int
+        let maxEventPages: Int
+        switch detail {
+        case .summary:
+            eventPageSize = 1
+            maxEventPages = 1
+        case .full:
+            eventPageSize = Self.eventPageSize
+            maxEventPages = Self.maxEventPages
+        }
+
         async let cycleUsage = aggregate(identity: identity, from: cycleStart, to: now)
         async let todayUsage = aggregate(identity: identity, from: calendar.startOfDay(for: now), to: now)
-        async let cycleEvents = events(identity: identity, from: cycleStart, to: now)
+        async let cycleEvents = events(
+            identity: identity, from: cycleStart, to: now,
+            pageSize: eventPageSize, maxPages: maxEventPages
+        )
 
         let (cycle, today, feed) = try await (cycleUsage, todayUsage, cycleEvents)
-        let sessions = SessionBreakdown.build(
-            events: feed.events,
-            catalog: naming.records(for: Array(Set(feed.events.compactMap(\.conversationID))))
-        )
+        let sessions: SessionBreakdown
+        let sessionsTruncated: Bool
+        let snapshotEvents: [SessionEvent]
+        switch detail {
+        case .summary:
+            sessions = .empty
+            sessionsTruncated = false
+            snapshotEvents = []
+        case .full:
+            sessions = SessionBreakdown.build(
+                events: feed.events,
+                catalog: naming.records(for: Array(Set(feed.events.compactMap(\.conversationID))))
+            )
+            sessionsTruncated = feed.truncated
+            snapshotEvents = feed.events
+        }
 
         return UsageSnapshot(
             settledSpendCents: mine.overallSpendCents?.value ?? 0,
@@ -389,8 +420,8 @@ public final class CursorAPI {
             lastActivity: feed.events.map(\.timestamp).max(),
             capturedAt: now,
             sessions: sessions,
-            sessionsTruncated: feed.truncated,
-            events: feed.events
+            sessionsTruncated: sessionsTruncated,
+            events: snapshotEvents
         )
     }
 
@@ -422,14 +453,17 @@ public final class CursorAPI {
     /// This one call serves both the sessions list and "Last request"; before sessions
     /// existed it ran with `pageSize: 1` for the timestamp alone, so widening it adds no
     /// request to a poll.
-    private func events(identity: AccountIdentity, from start: Date, to end: Date) async throws -> EventFeed {
+    private func events(
+        identity: AccountIdentity, from start: Date, to end: Date,
+        pageSize: Int = CursorAPI.eventPageSize, maxPages: Int = CursorAPI.maxEventPages
+    ) async throws -> EventFeed {
         guard end > start else { return EventFeed(events: [], truncated: false) }
 
         var collected: [FilteredUsageResponse.Event] = []
         var reported: Int?
         var exhaustedPages = true
 
-        for page in 1...Self.maxEventPages {
+        for page in 1...maxPages {
             let response = try await call(
                 FilteredUsageResponse.self,
                 path: "/api/dashboard/get-filtered-usage-events",
@@ -437,7 +471,7 @@ public final class CursorAPI {
                     "teamId": identity.teamID,
                     "userId": identity.numericUserID,
                     "page": page,
-                    "pageSize": Self.eventPageSize,
+                    "pageSize": pageSize,
                     "startDate": String(Int(start.timeIntervalSince1970 * 1000)),
                     "endDate": String(Int(end.timeIntervalSince1970 * 1000)),
                 ]
@@ -448,7 +482,7 @@ public final class CursorAPI {
 
             // Stop on a short page too: a server that ignores `page` would otherwise have
             // us request the same rows until the cap.
-            if batch.count < Self.eventPageSize || (reported.map { collected.count >= $0 } ?? false) {
+            if batch.count < pageSize || (reported.map { collected.count >= $0 } ?? false) {
                 exhaustedPages = false
                 break
             }

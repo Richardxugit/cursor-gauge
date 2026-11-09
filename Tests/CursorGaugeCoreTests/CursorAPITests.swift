@@ -235,6 +235,16 @@ final class CursorAPITests: XCTestCase {
         XCTAssertEqual(snapshot.models.first?.inputTokens, 319_174)
         XCTAssertEqual(snapshot.models.first?.cacheReadTokens, 3_732_298)
         XCTAssertEqual(snapshot.lastActivity, Date(timeIntervalSince1970: 1_785_658_176.745))
+        XCTAssertEqual(snapshot.events.count, 4)
+
+        let eventsRequest = try XCTUnwrap(
+            transport.requests.first { $0.url?.path == "/api/dashboard/get-filtered-usage-events" }
+        )
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(eventsRequest.httpBody)) as? [String: Any]
+        )
+        XCTAssertEqual(body["page"] as? Int, 1)
+        XCTAssertEqual(body["pageSize"] as? Int, 500)
     }
 
     func testDateRangesAreSentAsMillisecondStrings() async throws {
@@ -406,6 +416,37 @@ extension CursorAPITests {
             }(),
             naming: naming, clock: { self.now }
         )
+    }
+
+    func testSummarySnapshotReadsOnlyTheLatestEvent() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let naming = StubNaming([:])
+
+        let snapshot = try await sessionAPI(naming).fetchSnapshot(detail: .summary)
+
+        let calls = transport.requests.filter { $0.url?.path == "/api/dashboard/get-filtered-usage-events" }
+        XCTAssertEqual(calls.count, 1)
+        let request = try XCTUnwrap(calls.first)
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any]
+        )
+        XCTAssertEqual(body["page"] as? Int, 1)
+        XCTAssertEqual(body["pageSize"] as? Int, 1)
+        XCTAssertEqual(snapshot.lastActivity, Date(timeIntervalSince1970: 1_785_658_176.745))
+        XCTAssertEqual(snapshot.sessions, SessionBreakdown.empty)
+        XCTAssertFalse(snapshot.sessionsTruncated)
+        XCTAssertTrue(snapshot.events.isEmpty)
+        XCTAssertTrue(naming.askedFor.isEmpty)
+        XCTAssertEqual(snapshot.settledSpendCents, 251, accuracy: 0.001)
+        XCTAssertEqual(snapshot.liveSpendCents, 308.809726, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.todayCents, 308.809726, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.limitDollars ?? -1, 200, accuracy: 0.001)
+        XCTAssertEqual(snapshot.cycleStart, Date(timeIntervalSince1970: 1_785_542_400))
+        XCTAssertEqual(snapshot.cycleEnd, Date(timeIntervalSince1970: 1_788_220_800))
+        XCTAssertEqual(snapshot.models.first?.model, "composer-2.5-fast")
+        XCTAssertEqual(snapshot.models.first?.inputTokens, 319_174)
+        XCTAssertEqual(snapshot.capturedAt, now)
     }
 
     func testDecodesConversationIDAndNestsSubagents() async throws {
