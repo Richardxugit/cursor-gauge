@@ -73,6 +73,8 @@ public final class UsageStore {
     private let deadline: TimeInterval
     private var timer: Timer?
     private var consecutiveFailures = 0
+    private var menuIsOpen = false
+    private var needsDetailedRefresh = false
 
     public init(
         credentials: CredentialsProviding,
@@ -155,31 +157,47 @@ public final class UsageStore {
 
     // MARK: - Fetching
 
+    public func setMenuOpen(_ open: Bool) {
+        menuIsOpen = open
+        if open { needsDetailedRefresh = true }
+    }
+
     @discardableResult
     public func refresh() async -> Bool {
         guard !isRefreshing else { return false }
         isRefreshing = true
         defer { isRefreshing = false }
 
-        do {
-            let fresh = try await withDeadline(deadline) { [api] in try await api.fetchSnapshot() }
-            snapshot = fresh
-            lastUpdated = fresh.capturedAt
-            status = .ready
-            consecutiveFailures = 0
-            recomputeMetrics()
-            return true
-        } catch {
-            consecutiveFailures += 1
-            if let apiError = error as? APIError, apiError.isRecoverableByReauth {
-                // Token may have rotated under us; drop the cached identity too, since a
-                // re-auth can mean a different account.
-                credentials.invalidate()
-                api.forgetIdentity()
+        var succeeded = false
+        repeat {
+            let detail: CursorAPI.SnapshotDetail = menuIsOpen ? .full : .summary
+            if detail == .full { needsDetailedRefresh = false }
+            succeeded = false
+            do {
+                let fresh = try await withDeadline(deadline) { [api] in
+                    try await api.fetchSnapshot(detail: detail)
+                }
+                // A summary that finishes after the menu opens must not erase visible details.
+                if detail == .full || !menuIsOpen {
+                    snapshot = fresh
+                    lastUpdated = fresh.capturedAt
+                    status = .ready
+                    consecutiveFailures = 0
+                    recomputeMetrics()
+                }
+                succeeded = true
+            } catch {
+                consecutiveFailures += 1
+                if let apiError = error as? APIError, apiError.isRecoverableByReauth {
+                    // Token may have rotated under us; drop the cached identity too, since a
+                    // re-auth can mean a different account.
+                    credentials.invalidate()
+                    api.forgetIdentity()
+                }
+                status = .failed(describe(error))
             }
-            status = .failed(describe(error))
-            return false
-        }
+        } while menuIsOpen && needsDetailedRefresh
+        return succeeded
     }
 
     /// Runs `operation`, abandoning it after `seconds`.
