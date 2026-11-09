@@ -84,6 +84,12 @@ public final class UsageStore {
     private var mergedEvents: [SessionEvent] = []
     /// The cycle the merge was built against, so a rollover is spotted after the fetch.
     private var mergedCycleStart: Date?
+    /// How many full refreshes were published; drives the periodic reconciliation.
+    private var fullPublishCount = 0
+    /// Set when a feed came back truncated, so the next fetch re-reads the whole window.
+    private var forceNextWholeWindow = false
+    /// Every Nth published full refresh re-reads the entire window from scratch.
+    private static let reconciliationEvery = 10
 
     public init(
         credentials: CredentialsProviding,
@@ -179,6 +185,8 @@ public final class UsageStore {
         status = .loading
         mergedEvents = []
         mergedCycleStart = nil
+        fullPublishCount = 0
+        forceNextWholeWindow = false
     }
 
     @discardableResult
@@ -196,10 +204,11 @@ public final class UsageStore {
             if detail == .full { needsDetailedRefresh = false }
             attemptWasSuperseded = false
             succeeded = false
-            // A full read tops up from the newest merged event; an empty merge base reads
-            // the whole window.
+            // A full read tops up from the newest merged event; a whole-window read is
+            // forced on an empty base, after a truncated feed, and every Nth publish.
+            let fetchedWholeWindow = detail == .full && shouldFetchWholeWindow()
             let eventsSince: Date? =
-                detail == .full && !mergedEvents.isEmpty ? mergedEvents.map(\.timestamp).max() : nil
+                detail == .full && !fetchedWholeWindow ? mergedEvents.map(\.timestamp).max() : nil
             do {
                 let fresh = try await withDeadline(deadline) { [api] in
                     try await api.fetchSnapshot(
@@ -213,8 +222,10 @@ public final class UsageStore {
                     if detail == .full || !menuIsOpen {
                         let published: UsageSnapshot
                         if detail == .full {
-                            mergedEvents = mergedFeed(from: fresh)
+                            mergedEvents = mergedFeed(from: fresh, fetchedWholeWindow: fetchedWholeWindow)
                             mergedCycleStart = fresh.cycleStart
+                            fullPublishCount += 1
+                            forceNextWholeWindow = fresh.sessionsTruncated
                             published = rebuilt(fresh, events: mergedEvents)
                         } else {
                             published = fresh
@@ -246,10 +257,22 @@ public final class UsageStore {
         return succeeded
     }
 
-    /// Folds a fetched feed into the merged set. Replaced outright when the cycle rolled
-    /// over or the feed was truncated — both make the previous set an unreliable base.
-    private func mergedFeed(from fresh: UsageSnapshot) -> [SessionEvent] {
-        guard mergedCycleStart == fresh.cycleStart, !fresh.sessionsTruncated else {
+    /// Whether the next full feed should cover the whole window rather than a top-up.
+    ///
+    /// The merge base is only as good as its inputs: an empty base has nothing to extend,
+    /// a truncated feed is missing rows, and a periodic rebuild bounds how long any merge
+    /// mistake can live.
+    private func shouldFetchWholeWindow() -> Bool {
+        mergedEvents.isEmpty
+            || forceNextWholeWindow
+            || (fullPublishCount + 1) % Self.reconciliationEvery == 0
+    }
+
+    /// Folds a fetched feed into the merged set. Replaced outright on a whole-window
+    /// fetch, a cycle rollover, or a truncated feed — all make the previous set an
+    /// unreliable base to merge onto.
+    private func mergedFeed(from fresh: UsageSnapshot, fetchedWholeWindow: Bool) -> [SessionEvent] {
+        if fetchedWholeWindow || mergedCycleStart != fresh.cycleStart || fresh.sessionsTruncated {
             return fresh.events
         }
         var byKey: [EventKey: SessionEvent] = [:]

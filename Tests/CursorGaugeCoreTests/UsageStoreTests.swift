@@ -95,6 +95,17 @@ private enum Route {
       "monthlyLimitDollars":200,"effectivePerUserLimitDollars":200}],
      "subscriptionCycleStart":"1788220800000","nextCycleStart":"1790899200000"}
     """
+
+    /// A dense feed: `count` rows with `total` reported, to exercise the page cap.
+    static func eventsBody(count: Int, total: Int, baseTimestamp: Int64) -> String {
+        let rows = (0..<count).map { index in
+            """
+            {"timestamp":"\(baseTimestamp + Int64(index))","model":"composer-2.5-fast","chargedCents":1.0,\
+            "conversationId":"bulk-\(index % 7)","isHeadless":false}
+            """
+        }.joined(separator: ",")
+        return "{\"totalUsageEventsCount\":\(total),\"usageEventsDisplay\":[\(rows)]}"
+    }
 }
 
 /// Holds one request until the test releases it, and lets the test wait for its arrival.
@@ -241,6 +252,10 @@ private final class SwitchableTransport: Transport, @unchecked Sendable {
     /// Serves the given bodies in order on the next events requests; defaults when empty.
     func setEventBodies(_ bodies: [String]) {
         lock.withLock { eventBodies = bodies }
+    }
+
+    func setSpendBody(_ teamID: Int, _ body: String) {
+        lock.withLock { spendBodies[teamID] = body }
     }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
@@ -789,6 +804,86 @@ final class UsageStoreTests: XCTestCase {
         // A summary never established a merge base, so the full read starts from the cycle.
         // Two requests total: the summary poll, then the full read — both whole-window.
         XCTAssertEqual(transport.eventStartDates, [1_785_542_400_000, 1_785_542_400_000])
+    }
+
+    func testEveryTenthFullPublishReconcilesFromScratch() async {
+        let transport = SwitchableTransport()
+        transport.setEventBodies(Array(repeating: Route.eventOne, count: 9) + [Route.eventTwo])
+        let store = makeStore(transport: transport, deadline: 5)
+
+        store.setMenuOpen(true)
+        for _ in 0..<9 { await store.refresh() }
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
+
+        await store.refresh()
+
+        // Eight top-ups, then the 10th publish re-reads the whole window and replaces.
+        XCTAssertEqual(transport.eventStartDates.last, 1_785_542_400_000)
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-2"])
+    }
+
+    func testCycleRolloverReplacesTheMergedFeed() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+
+        store.setMenuOpen(true)
+        await store.refresh()
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
+
+        transport.setSpendBody(27_362_705, Route.techDigitalNewCycleSpend)
+        transport.setEventBodies([Route.eventTwo])
+        await store.refresh()
+
+        // The new cycle's start bounds the top-up window, and the merge is replaced.
+        XCTAssertEqual(transport.eventStartDates.last, 1_788_220_800_000)
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-2"])
+    }
+
+    func testTruncatedFeedReplacesTheMergeAndForcesAWholeWindowNext() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+
+        store.setMenuOpen(true)
+        await store.refresh()
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
+
+        // Three full pages of 500 with 1600 reported: the page cap bites.
+        transport.setEventBodies(
+            Array(repeating: Route.eventsBody(count: 500, total: 1_600, baseTimestamp: 1_785_658_000_000), count: 3)
+        )
+        await store.refresh()
+
+        XCTAssertTrue(store.snapshot?.sessionsTruncated ?? false)
+        XCTAssertEqual(store.snapshot?.events.count, 1_500)
+
+        transport.setEventBodies([Route.eventOne])
+        await store.refresh()
+
+        // Truncation forced the next fetch back to the whole window.
+        XCTAssertEqual(transport.eventStartDates.last, 1_785_542_400_000)
+        XCTAssertFalse(store.snapshot?.sessionsTruncated ?? true)
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
+    }
+
+    func testFailedRefreshDoesNotAdvanceTheReconciliationCounter() async {
+        let transport = SwitchableTransport()
+        let store = makeStore(transport: transport, deadline: 5)
+
+        store.setMenuOpen(true)
+        await store.refresh()
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
+
+        transport.failNextEventRequest()
+        let failed = await store.refresh()
+        XCTAssertFalse(failed)
+
+        await store.refresh()
+
+        // Only one publish happened, so the retry is still a top-up, not a reconciliation.
+        XCTAssertEqual(transport.eventStartDates, [
+            1_785_542_400_000, 1_785_657_576_745, 1_785_657_576_745,
+        ])
+        XCTAssertEqual(store.snapshot?.events.map(\.conversationID), ["session-1"])
     }
 
 }
