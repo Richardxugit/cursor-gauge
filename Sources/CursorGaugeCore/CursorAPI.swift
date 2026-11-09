@@ -256,6 +256,11 @@ public final class CursorAPI {
     private static let eventPageSize = 500
     private static let maxEventPages = 3
 
+    /// A top-up reaches this far back from `eventsSince` to admit late-arriving billing
+    /// events whose server record carries an earlier timestamp than the moment they
+    /// appeared.
+    private static let eventFeedOverlap: TimeInterval = 600
+
     public init(
         credentials: CredentialsProviding,
         transport: Transport = URLSessionTransport(),
@@ -386,8 +391,15 @@ public final class CursorAPI {
 
     // MARK: Snapshot
 
+    /// - Parameter eventsSince: When non-nil and `detail` is `.full`, the event feed
+    ///   window starts at `max(cycleStart, eventsSince - 10 minutes)` instead of covering
+    ///   the whole cycle, so a top-up only re-downloads what is new. The overlap admits
+    ///   late-arriving billing events whose server record carries an earlier timestamp
+    ///   than the moment they appeared. Summary polls ignore this parameter.
     public func fetchSnapshot(
-        detail: SnapshotDetail = .full, preferredTeamID: Int? = nil
+        detail: SnapshotDetail = .full,
+        preferredTeamID: Int? = nil,
+        eventsSince: Date? = nil
     ) async throws -> UsageSnapshot {
         let identity = try await discoverIdentity(preferredTeamID: preferredTeamID)
         let now = clock()
@@ -406,6 +418,16 @@ public final class CursorAPI {
         let cycleEnd = spend.nextCycleStart.map { Date(timeIntervalSince1970: $0.value / 1000) }
             ?? calendar.startOfMonth(for: calendar.date(byAdding: .month, value: 1, to: now) ?? now)
 
+        // A top-up only re-downloads what is new, reaching one overlap back to admit
+        // late-arriving billing events. The summary path keeps the whole cycle: its
+        // pageSize-1 read only fetches the newest row anyway.
+        let eventFeedStart: Date
+        if detail == .full, let eventsSince {
+            eventFeedStart = max(cycleStart, eventsSince.addingTimeInterval(-Self.eventFeedOverlap))
+        } else {
+            eventFeedStart = cycleStart
+        }
+
         let eventPageSize: Int
         let maxEventPages: Int
         switch detail {
@@ -420,7 +442,7 @@ public final class CursorAPI {
         async let cycleUsage = aggregate(identity: identity, from: cycleStart, to: now)
         async let todayUsage = aggregate(identity: identity, from: calendar.startOfDay(for: now), to: now)
         async let cycleEvents = events(
-            identity: identity, from: cycleStart, to: now,
+            identity: identity, from: eventFeedStart, to: now,
             pageSize: eventPageSize, maxPages: maxEventPages
         )
 

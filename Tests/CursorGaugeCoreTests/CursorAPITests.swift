@@ -384,6 +384,63 @@ final class CursorAPITests: XCTestCase {
         XCTAssertLessThan(Int(start)!, Int(end)!, "endDate must be after startDate or the API 400s")
     }
 
+    // MARK: Event feed window
+
+    private func filteredEventsRequestBody() throws -> [String: Any] {
+        let request = try XCTUnwrap(
+            transport.requests.first { $0.url?.path == "/api/dashboard/get-filtered-usage-events" }
+        )
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any]
+        )
+    }
+
+    func testEventsSinceNilKeepsTheFullCycleWindow() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+
+        _ = try await api.fetchSnapshot(detail: .full, eventsSince: nil)
+
+        let body = try filteredEventsRequestBody()
+        XCTAssertEqual(body["startDate"] as? String, "1785542400000", "no top-up means the whole cycle")
+        XCTAssertEqual(body["endDate"] as? String, "1785658392000")
+    }
+
+    func testEventsSinceStartsTheWindowTenMinutesBefore() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let eventsSince = Date(timeIntervalSince1970: 1_785_650_000)
+
+        _ = try await api.fetchSnapshot(detail: .full, eventsSince: eventsSince)
+
+        let body = try filteredEventsRequestBody()
+        XCTAssertEqual(body["startDate"] as? String, "1785649400000", "overlap admits late events")
+        XCTAssertEqual(body["endDate"] as? String, "1785658392000")
+    }
+
+    func testEventsSinceBeforeTheCycleIsClampedToCycleStart() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let eventsSince = Date(timeIntervalSince1970: 1_700_000_000)
+
+        _ = try await api.fetchSnapshot(detail: .full, eventsSince: eventsSince)
+
+        let body = try filteredEventsRequestBody()
+        XCTAssertEqual(body["startDate"] as? String, "1785542400000")
+    }
+
+    func testSummaryIgnoresEventsSince() async throws {
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let eventsSince = Date(timeIntervalSince1970: 1_785_650_000)
+
+        _ = try await api.fetchSnapshot(detail: .summary, eventsSince: eventsSince)
+
+        let body = try filteredEventsRequestBody()
+        XCTAssertEqual(body["startDate"] as? String, "1785542400000")
+        XCTAssertEqual(body["pageSize"] as? Int, 1)
+    }
+
     func testMissingOwnEntryInSpendListIsReported() async {
         transport.routes = [
             "/api/auth/me": (Fixture.authMe, 200),
