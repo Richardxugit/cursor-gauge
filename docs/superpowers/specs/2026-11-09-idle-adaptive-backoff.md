@@ -44,9 +44,9 @@ Rules:
    not the base cadence, otherwise a quiet-backed-off reading would be
    flagged stale between polls. Track the interval used for the most
    recent successful publish.
-7. The existing re-arm logic in `scheduleNext()` already compares the
-   interval after each refresh, so streak-driven changes take effect on
-   the next fire without new scheduling code.
+7. Re-arming is handled by `rearmIfNeeded()`: it runs at the end of every
+   `refresh()` and directly in `setMenuOpen`/`selectTeam`, so streak-driven
+   and cadence-driven changes take effect immediately, on and off the timer.
 
 ## Non-goals
 
