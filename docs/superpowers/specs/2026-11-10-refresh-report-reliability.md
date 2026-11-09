@@ -87,7 +87,8 @@ flowchart TD
   stays `cursor-gauge/report/1`: the change is additive and `hasActivity` keeps its behavior.
 - Event paging marks the snapshot truncated whenever the declared event total exceeds the
   collected row count, including a short page before the page cap. Existing top-up recovery
-  and full-report partial rendering then work unchanged.
+  and partial-state propagation remain unchanged; the HTML partial banner describes incomplete
+  coverage without incorrectly attributing every case to the page cap.
 
 ## Invariants
 

@@ -121,7 +121,7 @@ Use `swift test --filter TypeName` for focused runs. Record compile-red separate
 1. Add a short-page/larger-total API test; update renderer/export tests so `.empty` is quiet and an explicit unavailable digest is blind. Cover GUI-only, CLI-only, both, and mixed-with-data cases; assert schema remains `cursor-gauge/report/1`.
 2. Run focused tests and observe the expected assertion reds.
 3. Set `truncated = collected.count < reportedTotal` after paging, preserving the page-cap bound.
-4. Render source-specific unavailable warnings and a neutral readable-quiet note. Add `activityAvailability` with `gui`/`cli` states to JSON; leave `hasActivity` and prompt inclusion unchanged.
+4. Render source-specific unavailable warnings and a neutral readable-quiet note. Add `activityAvailability` with `gui`/`cli` states to JSON; leave `hasActivity` and prompt inclusion unchanged. Generalize the HTML partial banner so short pages are not falsely described as hitting the page cap.
 5. Run focused tests, then full suite. Commit: `fix: report incomplete activity and event data`.
 
 ### Task 7: Documentation and final verification
