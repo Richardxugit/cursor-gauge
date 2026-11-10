@@ -197,14 +197,12 @@ public final class CliCatalog {
         if FileManager.default.fileExists(atPath: storeURL.path) {
             if let database = ReadOnlyDatabase(url: storeURL) {
                 let queried = database.query("SELECT data FROM blobs") { row in
-                    // Only the plaintext blobs are parsed. A blob that does not begin with
-                    // `{` is either encrypted or a format this does not claim to understand,
-                    // and is skipped rather than guessed at — and flagged, so the report
-                    // knows the counts are a floor.
+                    // Only plaintext blobs are parsed. Encrypted or unknown row formats
+                    // are normal in this store and are skipped rather than guessed at; they
+                    // do not make an otherwise readable database unavailable.
                     guard let text = row.text(0), text.hasPrefix("{"),
                           let object = try? JSONSerialization.jsonObject(with: Data(text.utf8))
                             as? [String: Any] else {
-                        storeReadable = false
                         return
                     }
                     let role = object["role"] as? String

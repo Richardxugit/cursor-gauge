@@ -525,4 +525,19 @@ final class ActivityCatalogTests: XCTestCase {
             unavailableSources: [.gui]
         ))
     }
+
+    /// A later aggregate query can fail after the bubble table was read. Keep the activity
+    /// already extracted, but do not let that partial read look like a quiet store.
+    func testLaterQueryFailureKeepsActivityAndMarksTheStoreUnavailable() throws {
+        try makeDatabase(bubbles: [toolBubble(conversation: "c1", tool: "read_file_v2")])
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &handle), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(handle, "DROP TABLE composerHeaders", nil, nil, nil), SQLITE_OK)
+        sqlite3_close_v2(handle)
+
+        let result = digest()
+        XCTAssertEqual(result.tools.first?.calls, 1, "the successful tool query is preserved")
+        XCTAssertEqual(result.byConversation["c1"]?.toolCalls, 1)
+        XCTAssertEqual(result.unavailableSources, [.gui])
+    }
 }

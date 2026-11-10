@@ -361,26 +361,28 @@ public final class ActivityCatalog {
         defer { database.query("DROP TABLE IF EXISTS temp.digest_bubbles") { _ in } }
 
         // A later failure keeps whatever was already read: partial data beats none, and the
-        // unavailable marker tells the report the numbers are not the whole story.
+        // database's query marker tells the report the numbers are not the whole story.
         let tools = tools(database)
-        var unavailableSources: Set<ActivitySource> = []
-        if tools == nil { unavailableSources.insert(.gui) }
         let files = files(database)
+        let prompts = prompts(database)
+        let conversations = conversations(database, fileTypes: files.perConversation)
+        let daily = daily(database)
+        let unavailableSources: Set<ActivitySource> = database.hadQueryFailure ? [.gui] : []
         return ActivityDigest(
-            tools: tools ?? [],
-            prompts: prompts(database),
+            tools: tools,
+            prompts: prompts,
             files: files.overall,
-            byConversation: conversations(database, fileTypes: files.perConversation),
-            daily: daily(database),
+            byConversation: conversations,
+            daily: daily,
             unavailableSources: unavailableSources
         )
     }
 
     // MARK: - Queries
 
-    private func tools(_ database: ReadOnlyDatabase) -> [ToolUsage]? {
+    private func tools(_ database: ReadOnlyDatabase) -> [ToolUsage] {
         var found: [ToolUsage] = []
-        let ran = database.query("""
+        database.query("""
             SELECT tool,
                    count(*),
                    sum(status = 'error'),
@@ -397,7 +399,7 @@ public final class ActivityCatalog {
                 errors: row.int(2), cancelled: row.int(3), rejected: row.int(4)
             ))
         }
-        return ran ? found : nil
+        return found
     }
 
     private func prompts(_ database: ReadOnlyDatabase) -> PromptStats {

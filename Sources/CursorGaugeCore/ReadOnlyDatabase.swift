@@ -12,6 +12,9 @@ import SQLite3
 /// yields "no rows" and lets the caller carry on.
 final class ReadOnlyDatabase {
     private let handle: OpaquePointer
+    /// Whether any statement failed to prepare or run to completion. Callers that render
+    /// completeness can use this without changing the best-effort row API.
+    private(set) var hadQueryFailure = false
 
     init?(url: URL) {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -35,13 +38,17 @@ final class ReadOnlyDatabase {
 
     /// Runs `sql`, binding `parameters` in order, and hands each row to `consume`.
     ///
-    /// Returns `false` when the statement could not even be prepared — which is what a
-    /// renamed table looks like — so a caller can tell "no rows" from "no such table".
+    /// Returns `false` when the statement could not be prepared or did not run to
+    /// completion — which is what a renamed table or a mid-read failure looks like — so a
+    /// caller can tell "no rows" from "could not read".
     @discardableResult
     func query(_ sql: String, _ parameters: [String] = [], consume: (Row) -> Void) -> Bool {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK,
-              let statement else { return false }
+              let statement else {
+            hadQueryFailure = true
+            return false
+        }
         defer { sqlite3_finalize(statement) }
 
         // SQLITE_TRANSIENT: SQLite copies the bytes, so the Swift strings need not outlive
@@ -51,10 +58,17 @@ final class ReadOnlyDatabase {
             sqlite3_bind_text(statement, Int32(index + 1), parameter, -1, transient)
         }
 
-        while sqlite3_step(statement) == SQLITE_ROW {
-            consume(Row(statement: statement))
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                consume(Row(statement: statement))
+            case SQLITE_DONE:
+                return true
+            default:
+                hadQueryFailure = true
+                return false
+            }
         }
-        return true
     }
 
     /// One row, read by column index. A thin wrapper so call sites never touch a raw pointer.

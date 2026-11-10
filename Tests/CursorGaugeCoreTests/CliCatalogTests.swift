@@ -129,9 +129,9 @@ final class CliCatalogTests: XCTestCase {
         XCTAssertEqual(files.first { $0.ext == ".ts" }?.edits, 1)
     }
 
-    /// Roughly two thirds of real blobs are not plaintext — the store carries a
-    /// `blobEncryptionKey`. Unreadable blobs are skipped, never guessed at, and the store
-    /// is flagged so the report knows the counts are a floor.
+    /// Roughly two thirds of real blobs are encrypted or otherwise not plaintext — the
+    /// store carries a `blobEncryptionKey`. They are skipped, never guessed at, and do not
+    /// make an otherwise readable store unavailable; the plaintext counts remain a floor.
     func testUnreadableBlobsAreSkippedRatherThanGuessedAt() throws {
         try makeConversation(
             id: "agent-1", title: "Work", cwd: "/repo",
@@ -141,7 +141,8 @@ final class CliCatalogTests: XCTestCase {
         let result = digest()
         XCTAssertEqual(result.byConversation["agent-1"]?.toolCalls, 1, "the readable blob still counts")
         XCTAssertEqual(result.byConversation["agent-1"]?.workspace, "repo", "metadata survives")
-        XCTAssertEqual(result.unavailableSources, [.cli], "unreadable blobs mean the store was not fully read")
+        XCTAssertTrue(result.unavailableSources.isEmpty,
+                      "expected encrypted blobs are not a database read failure")
     }
 
     // MARK: - The window
