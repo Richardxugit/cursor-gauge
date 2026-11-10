@@ -54,6 +54,16 @@ final class ReportCommandTests: XCTestCase {
         XCTAssertNil(object["promptTextCoverage"])
     }
 
+    /// The open helper must hand the URL to the injected opener and report its result
+    /// verbatim, so callers can tell a browser launch from a silent failure.
+    func testOpenReturnsOpenerResult() {
+        var recorded: [URL] = []
+        let url = URL(fileURLWithPath: "/tmp/report.html")
+        XCTAssertTrue(ReportCommand.open(url) { recorded.append($0); return true })
+        XCTAssertFalse(ReportCommand.open(url) { recorded.append($0); return false })
+        XCTAssertEqual(recorded, [url, url])
+    }
+
     private func writeReportJSON(withPromptText: Bool) async throws -> [String: Any] {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

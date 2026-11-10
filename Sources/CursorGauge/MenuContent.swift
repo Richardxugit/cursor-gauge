@@ -446,7 +446,9 @@ struct MenuContent: View {
                     to: ReportCommand.defaultDestination(),
                     preferredTeamID: preferences.selectedTeamID
                 )
-                NSWorkspace.shared.open(written)
+                if !ReportCommand.open(written) {
+                    reportError = "The report was written to \(written.path) but could not be opened."
+                }
             } catch {
                 reportError = (error as? APIError)?.description
                     ?? (error as? TokenError)?.description

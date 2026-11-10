@@ -91,6 +91,11 @@ enum ReportCommand {
         return destination
     }
 
+    /// Opens the written report, reporting whether the opener succeeded.
+    static func open(_ url: URL, using opener: (URL) -> Bool = NSWorkspace.shared.open) -> Bool {
+        opener(url)
+    }
+
     /// `CursorGauge --report [path] [--json] [--with-prompts]`.
     static func run(path: String?, format: Format) -> Never {
         let destination = path.map { URL(fileURLWithPath: $0) }
@@ -107,7 +112,12 @@ enum ReportCommand {
                 print("report written to \(written.path)")
                 // Opening a JSON file would hand it to whatever claims the extension, which
                 // is rarely what was wanted; the path on stdout is more useful.
-                if case .html = format { NSWorkspace.shared.open(written) }
+                if case .html = format, !open(written) {
+                    FileHandle.standardError.write(
+                        Data("error: report written to \(written.path) but could not be opened\n".utf8)
+                    )
+                    exitCode = 1
+                }
             } catch {
                 let message = (error as? TokenError)?.description
                     ?? (error as? APIError)?.description
