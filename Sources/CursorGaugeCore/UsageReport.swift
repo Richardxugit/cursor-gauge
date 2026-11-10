@@ -60,7 +60,8 @@ public struct UsageReport {
     public let cycleStart: Date
     public let cycleEnd: Date
     public let metrics: UsageMetrics
-    /// Whether the events feed hit its page cap, in which case the cycle is only partly covered.
+    /// Whether the events feed served fewer rows than the billing API declared, in which
+    /// case the cycle is only partly covered.
     public let truncated: Bool
 
     /// Ranked by cost. Residual spend is deliberately *not* in here — see the three
@@ -94,6 +95,10 @@ public struct UsageReport {
     /// Whether the local store had anything to say. False means the report is cost-only —
     /// worth stating on the page rather than rendering empty sections.
     public var hasActivity: Bool { !tools.isEmpty || prompts.count > 0 }
+
+    /// Local stores that exist but could not be read. Empty means both front ends were
+    /// read, and a quiet report is therefore a quiet cycle — not a failure.
+    public let unavailableActivitySources: Set<ActivitySource>
 
     /// The three buckets, summed. Every billed cent lands in exactly one of them.
     public var attributedCents: Double {
@@ -280,7 +285,8 @@ public struct UsageReport {
             tools: activity.tools,
             prompts: activity.prompts,
             files: activity.files,
-            daily: daily
+            daily: daily,
+            unavailableActivitySources: activity.unavailableSources
         )
     }
 

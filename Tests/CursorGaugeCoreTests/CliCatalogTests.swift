@@ -130,14 +130,18 @@ final class CliCatalogTests: XCTestCase {
     }
 
     /// Roughly two thirds of real blobs are not plaintext — the store carries a
-    /// `blobEncryptionKey`. Unreadable blobs are skipped, never guessed at.
+    /// `blobEncryptionKey`. Unreadable blobs are skipped, never guessed at, and the store
+    /// is flagged so the report knows the counts are a floor.
     func testUnreadableBlobsAreSkippedRatherThanGuessedAt() throws {
         try makeConversation(
             id: "agent-1", title: "Work", cwd: "/repo",
             created: cycleStart.addingTimeInterval(86_400),
             blobs: [toolCall("Read", args: #"{"path":"/repo/a.ts"}"#), "not json at all", ""]
         )
-        XCTAssertEqual(digest().byConversation["agent-1"]?.toolCalls, 1)
+        let result = digest()
+        XCTAssertEqual(result.byConversation["agent-1"]?.toolCalls, 1, "the readable blob still counts")
+        XCTAssertEqual(result.byConversation["agent-1"]?.workspace, "repo", "metadata survives")
+        XCTAssertEqual(result.unavailableSources, [.cli], "unreadable blobs mean the store was not fully read")
     }
 
     // MARK: - The window
@@ -195,6 +199,28 @@ final class CliCatalogTests: XCTestCase {
         XCTAssertTrue(CliCatalog(root: absent).records(for: ["a"]).isEmpty)
     }
 
+    /// Never having used the CLI is normal and stays a readable empty store. A root that
+    /// exists but cannot be enumerated is not: it is a failure worth saying so about.
+    func testAnExistingRootThatCannotBeEnumeratedMarksTheStoreUnavailable() throws {
+        try FileManager.default.removeItem(at: root)
+        try Data("not a directory".utf8).write(to: root)
+        XCTAssertEqual(digest(), ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.cli]
+        ))
+    }
+
+    /// A file where a workspace directory belongs: the workspace cannot be listed, so the
+    /// store is not in a shape this code can read.
+    func testAWorkspaceThatCannotBeEnumeratedMarksTheStoreUnavailable() throws {
+        try Data("file, not workspace".utf8)
+            .write(to: root.appendingPathComponent("workspace-hash"))
+        XCTAssertEqual(digest(), ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.cli]
+        ))
+    }
+
     func testAConversationWithNoStoreStillContributesItsMetadata() throws {
         let directory = try makeConversation(id: "agent-1", title: "Work", cwd: "/repo/ko-tests",
                                              created: cycleStart.addingTimeInterval(86_400))
@@ -204,10 +230,40 @@ final class CliCatalogTests: XCTestCase {
         XCTAssertEqual(record.toolCalls, 0)
     }
 
+    /// A conversation whose store exists but cannot be opened is a failure; its metadata
+    /// still survives so cost can be attributed to its repo.
+    func testAStoreThatCannotBeOpenedMarksTheStoreUnavailable() throws {
+        let directory = try makeConversation(id: "agent-1", title: "Work", cwd: "/repo",
+                                             created: cycleStart.addingTimeInterval(86_400))
+        try Data("not a database".utf8).write(to: directory.appendingPathComponent("store.db"))
+        let result = digest()
+        XCTAssertEqual(result.byConversation["agent-1"]?.workspace, "repo", "metadata survives")
+        XCTAssertEqual(result.byConversation["agent-1"]?.toolCalls, 0)
+        XCTAssertEqual(result.unavailableSources, [.cli])
+    }
+
+    /// A real SQLite file that is not the CLI's shape (no blobs table) is the same story.
+    func testAStoreWithoutTheBlobsTableMarksTheStoreUnavailable() throws {
+        let directory = try makeConversation(id: "agent-1", title: "Work", cwd: "/repo",
+                                             created: cycleStart.addingTimeInterval(86_400))
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("store.db"))
+        var handle: OpaquePointer?
+        let path = directory.appendingPathComponent("store.db").path
+        XCTAssertEqual(sqlite3_open(path, &handle), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(handle, "CREATE TABLE somethingElse (a TEXT)", nil, nil, nil), SQLITE_OK)
+        sqlite3_close_v2(handle)
+        let result = digest()
+        XCTAssertEqual(result.byConversation["agent-1"]?.workspace, "repo", "metadata survives")
+        XCTAssertEqual(result.unavailableSources, [.cli])
+    }
+
     func testCorruptMetadataIsSkipped() throws {
         let directory = root.appendingPathComponent("workspace-hash/broken")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data("not json".utf8).write(to: directory.appendingPathComponent("meta.json"))
-        XCTAssertEqual(digest(), .empty)
+        let result = digest()
+        XCTAssertTrue(result.byConversation.isEmpty, "the conversation is skipped")
+        XCTAssertEqual(result.unavailableSources, [.cli],
+                       "a corrupt store is a failure, not a quiet cycle")
     }
 }

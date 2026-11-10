@@ -84,6 +84,36 @@ final class ActivityMergeTests: XCTestCase {
         )
         XCTAssertEqual(original.merging(.empty), original)
     }
+
+    // MARK: - Availability
+
+    /// An unreadable store is not a quiet one: merging must carry the unavailable marker
+    /// without discarding whatever the readable side contributed.
+    func testUnavailableSourcesSurviveTheMergeWithTheReadableData() {
+        let cliUnavailable = ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.cli]
+        )
+        let merged = digest(
+            tools: [ToolUsage(name: "read_file_v2", calls: 3)],
+            conversations: ["gui-1": ConversationActivity(workspace: "ko-tests")]
+        ).merging(cliUnavailable)
+        XCTAssertEqual(merged.tools.first?.calls, 3, "readable data survives the merge")
+        XCTAssertEqual(merged.byConversation["gui-1"]?.workspace, "ko-tests")
+        XCTAssertEqual(merged.unavailableSources, [.cli])
+    }
+
+    func testUnavailableSourcesFromBothSidesUnion() {
+        let guiUnavailable = ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.gui]
+        )
+        let cliUnavailable = ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.cli]
+        )
+        XCTAssertEqual(guiUnavailable.merging(cliUnavailable).unavailableSources, [.gui, .cli])
+    }
 }
 
 /// The reconciliation identity, which asks whether money was lost — not whether it rounds.
@@ -132,7 +162,8 @@ final class ReconciliationTests: XCTestCase {
             generatedAt: now, cycleStart: cycleStart, cycleEnd: cycleStart, metrics: result.metrics,
             truncated: false, workspaces: [], cloudCents: 0, cloudCount: 0,
             unattributedCents: 0, unbilledConversations: 0, bySource: [:], totalCents: 100,
-            models: [], sessions: [], ledger: [], tools: [], prompts: .empty, files: [], daily: []
+            models: [], sessions: [], ledger: [], tools: [], prompts: .empty, files: [], daily: [],
+            unavailableActivitySources: []
         )
         XCTAssertFalse(broken.reconciles, "a cycle whose buckets hold nothing cannot reconcile")
     }

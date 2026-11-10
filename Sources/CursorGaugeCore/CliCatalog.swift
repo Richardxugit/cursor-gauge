@@ -36,8 +36,15 @@ public final class CliCatalog {
 
     /// Everything the CLI recorded for conversations still active at or after `since`.
     public func digest(since: Date) -> ActivityDigest {
-        let conversations = read(since: since)
-        guard !conversations.isEmpty else { return .empty }
+        let result = read(since: since)
+        let unavailableSources: Set<ActivitySource> = result.unavailable ? [.cli] : []
+        let conversations = result.conversations
+        guard !conversations.isEmpty else {
+            return ActivityDigest(
+                tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+                unavailableSources: unavailableSources
+            )
+        }
 
         var tools: [String: Int] = [:]
         var servers: [String: String] = [:]
@@ -90,7 +97,8 @@ public final class CliCatalog {
             ),
             daily: perDay
                 .map { DayActivity(day: $0.key, prompts: $0.value.prompts, toolCalls: $0.value.tools) }
-                .sorted { $0.day < $1.day }
+                .sorted { $0.day < $1.day },
+            unavailableSources: unavailableSources
         )
     }
 
@@ -105,23 +113,48 @@ public final class CliCatalog {
         let editsByExtension: [String: Int]
     }
 
-    private func read(since: Date) -> [Conversation] {
+    private struct ReadResult {
+        var conversations: [Conversation] = []
+        /// Set when an existing store could not be fully read. An absent root is *not* a
+        /// failure: never having used the CLI is a normal, quiet state.
+        var unavailable = false
+    }
+
+    private func read(since: Date) -> ReadResult {
         let manager = FileManager.default
+        var result = ReadResult()
         guard let workspaces = try? manager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil
-        ) else { return [] }
+        ) else {
+            if manager.fileExists(atPath: root.path) { result.unavailable = true }
+            return result
+        }
 
-        var found: [Conversation] = []
         for workspace in workspaces {
-            let directories = (try? manager.contentsOfDirectory(
+            guard let directories = try? manager.contentsOfDirectory(
                 at: workspace, includingPropertiesForKeys: nil
-            )) ?? []
+            ) else {
+                result.unavailable = true
+                continue
+            }
             for directory in directories {
-                guard let meta = metadata(in: directory), meta.updated >= since else { continue }
-                found.append(conversation(at: directory, meta: meta))
+                guard let meta = metadata(in: directory) else {
+                    // A corrupt meta.json cannot place the conversation in the window, so
+                    // it is skipped — but a present, unreadable meta is a failure to report.
+                    if manager.fileExists(
+                        atPath: directory.appendingPathComponent("meta.json").path
+                    ) {
+                        result.unavailable = true
+                    }
+                    continue
+                }
+                guard meta.updated >= since else { continue }
+                let entry = conversation(at: directory, meta: meta)
+                if !entry.storeReadable { result.unavailable = true }
+                result.conversations.append(entry.conversation)
             }
         }
-        return found
+        return result
     }
 
     private struct Meta {
@@ -146,72 +179,96 @@ public final class CliCatalog {
         )
     }
 
-    private func conversation(at directory: URL, meta: Meta) -> Conversation {
+    /// Returns the conversation and whether its store was fully read. A missing `store.db`
+    /// is fine — a conversation directory that has not finished writing contributes its
+    /// metadata alone. A `store.db` that exists but cannot be opened, lacks the blobs
+    /// table, or holds unreadable blobs is a partial read.
+    private func conversation(
+        at directory: URL, meta: Meta
+    ) -> (conversation: Conversation, storeReadable: Bool) {
         var tools: [String: Int] = [:]
         var servers: [String: String] = [:]
         var reads: [String: Int] = [:]
         var edits: [String: Int] = [:]
         var lengths: [Int] = []
+        var storeReadable = true
 
-        // Only the plaintext blobs are parsed. A blob that does not begin with `{` is either
-        // encrypted or a format this does not claim to understand, and is skipped rather
-        // than guessed at.
-        if let database = ReadOnlyDatabase(url: directory.appendingPathComponent("store.db")) {
-            database.query("SELECT data FROM blobs") { row in
-                guard let text = row.text(0), text.hasPrefix("{"),
-                      let object = try? JSONSerialization.jsonObject(with: Data(text.utf8))
-                        as? [String: Any] else { return }
-                let role = object["role"] as? String
-                let parts = object["content"] as? [[String: Any]] ?? []
-
-                if role == "user" {
-                    let length = parts.compactMap { $0["text"] as? String }.joined().count
-                    if length > 0 { lengths.append(length) }
-                }
-
-                for part in parts where part["type"] as? String == "tool-call" {
-                    let arguments = part["args"] as? [String: Any] ?? [:]
-                    var name = part["toolName"] as? String ?? "?"
-                    var server: String?
-                    // An MCP call names the bridge, not the work. Report what actually ran and
-                    // keep the server alongside, matching how the editor's names decompose.
-                    if name == "CallMcpTool" {
-                        server = arguments["server"] as? String
-                        name = arguments["toolName"] as? String ?? name
+        let storeURL = directory.appendingPathComponent("store.db")
+        if FileManager.default.fileExists(atPath: storeURL.path) {
+            if let database = ReadOnlyDatabase(url: storeURL) {
+                let queried = database.query("SELECT data FROM blobs") { row in
+                    // Only the plaintext blobs are parsed. A blob that does not begin with
+                    // `{` is either encrypted or a format this does not claim to understand,
+                    // and is skipped rather than guessed at — and flagged, so the report
+                    // knows the counts are a floor.
+                    guard let text = row.text(0), text.hasPrefix("{"),
+                          let object = try? JSONSerialization.jsonObject(with: Data(text.utf8))
+                            as? [String: Any] else {
+                        storeReadable = false
+                        return
                     }
-                    tools[name, default: 0] += 1
-                    if let server { servers[name] = server }
+                    let role = object["role"] as? String
+                    let parts = object["content"] as? [[String: Any]] ?? []
 
-                    if let path = arguments["path"] as? String {
-                        let ext = Self.extension(of: path)
-                        if Self.changesFiles(name) {
-                            edits[ext, default: 0] += 1
-                        } else {
-                            reads[ext, default: 0] += 1
+                    if role == "user" {
+                        let length = parts.compactMap { $0["text"] as? String }.joined().count
+                        if length > 0 { lengths.append(length) }
+                    }
+
+                    for part in parts where part["type"] as? String == "tool-call" {
+                        let arguments = part["args"] as? [String: Any] ?? [:]
+                        var name = part["toolName"] as? String ?? "?"
+                        var server: String?
+                        // An MCP call names the bridge, not the work. Report what actually ran and
+                        // keep the server alongside, matching how the editor's names decompose.
+                        if name == "CallMcpTool" {
+                            server = arguments["server"] as? String
+                            name = arguments["toolName"] as? String ?? name
+                        }
+                        tools[name, default: 0] += 1
+                        if let server { servers[name] = server }
+
+                        if let path = arguments["path"] as? String {
+                            let ext = Self.extension(of: path)
+                            if Self.changesFiles(name) {
+                                edits[ext, default: 0] += 1
+                            } else {
+                                reads[ext, default: 0] += 1
+                            }
                         }
                     }
                 }
+                if !queried {
+                    // The store opened but is not the CLI's shape.
+                    storeReadable = false
+                }
+            } else {
+                // The store exists but cannot be opened.
+                storeReadable = false
             }
         }
 
-        return Conversation(
-            id: directory.lastPathComponent,
-            activity: ConversationActivity(
-                workspace: meta.cwd.map { ($0 as NSString).lastPathComponent },
-                workspacePath: meta.cwd,
-                mode: "cli",
-                prompts: lengths.count,
-                toolCalls: tools.values.reduce(0, +),
-                tools: tools,
-                firstActivity: meta.created,
-                lastActivity: meta.updated,
-                promptLengths: lengths,
-                fileTypes: reads.merging(edits, uniquingKeysWith: +),
-                source: .cli
+        return (
+            Conversation(
+                id: directory.lastPathComponent,
+                activity: ConversationActivity(
+                    workspace: meta.cwd.map { ($0 as NSString).lastPathComponent },
+                    workspacePath: meta.cwd,
+                    mode: "cli",
+                    prompts: lengths.count,
+                    toolCalls: tools.values.reduce(0, +),
+                    tools: tools,
+                    firstActivity: meta.created,
+                    lastActivity: meta.updated,
+                    promptLengths: lengths,
+                    fileTypes: reads.merging(edits, uniquingKeysWith: +),
+                    source: .cli
+                ),
+                servers: servers,
+                readsByExtension: reads,
+                editsByExtension: edits
             ),
-            servers: servers,
-            readsByExtension: reads,
-            editsByExtension: edits
+            storeReadable: storeReadable
         )
     }
 

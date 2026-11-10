@@ -284,12 +284,56 @@ final class UsageReportTests: XCTestCase {
 
     /// The local store is the activity half only. Losing it must cost detail, never numbers.
     func testAnUnreadableLocalStoreStillProducesTheCostHalf() {
+        let blind = ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.gui]
+        )
         let result = report(events: [event("c1", cents: 300), event("c2", cents: 100)],
-                            activity: .empty)
+                            activity: blind)
         XCTAssertEqual(result.totalCents, 400)
         XCTAssertEqual(result.unattributedCents, 400, "with no local store nothing has a repo")
         XCTAssertTrue(result.reconciles)
         XCTAssertFalse(result.hasActivity, "the report should say the activity half is missing")
+        XCTAssertEqual(result.unavailableActivitySources, [.gui])
+    }
+
+    // MARK: - Availability
+
+    /// The report carries which stores could not be read, so the page and the JSON can say
+    /// so rather than guessing from the absence of data.
+    func testTheReportCarriesUnavailableActivitySources() {
+        let cliUnavailable = ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.cli]
+        )
+        let result = report(events: [event("c1", cents: 100)], activity: cliUnavailable)
+        XCTAssertEqual(result.unavailableActivitySources, [.cli])
+    }
+
+    /// A quiet store and an unreadable one both have no activity rows, but only the
+    /// unreadable one is flagged: `hasActivity` still describes data, not availability.
+    func testUnavailableSourcesDoNotChangeHasActivitySemantics() {
+        let quiet = report(events: [event("c1", cents: 100)], activity: .empty)
+        XCTAssertFalse(quiet.hasActivity)
+        XCTAssertTrue(quiet.unavailableActivitySources.isEmpty,
+                      "a readable quiet store is not a failure")
+
+        let blind = ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.gui, .cli]
+        )
+        let unreadable = report(events: [event("c1", cents: 100)], activity: blind)
+        XCTAssertFalse(unreadable.hasActivity)
+        XCTAssertEqual(unreadable.unavailableActivitySources, [.gui, .cli])
+
+        let mixed = ActivityDigest(
+            tools: [ToolUsage(name: "read_file_v2", calls: 1)], prompts: .empty,
+            files: [], byConversation: [:], daily: [], unavailableSources: [.cli]
+        )
+        let partial = report(events: [event("c1", cents: 100)], activity: mixed)
+        XCTAssertTrue(partial.hasActivity,
+                      "data read alongside an unreadable store is still activity")
+        XCTAssertEqual(partial.unavailableActivitySources, [.cli])
     }
 
     func testAReportOverAnEmptyCycleIsStillValid() {
@@ -297,5 +341,7 @@ final class UsageReportTests: XCTestCase {
         XCTAssertEqual(result.totalCents, 0)
         XCTAssertTrue(result.reconciles)
         XCTAssertTrue(result.workspaces.isEmpty)
+        XCTAssertTrue(result.unavailableActivitySources.isEmpty,
+                      "an empty readable cycle is quiet, not broken")
     }
 }

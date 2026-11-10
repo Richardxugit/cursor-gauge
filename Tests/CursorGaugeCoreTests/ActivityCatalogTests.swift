@@ -502,18 +502,27 @@ final class ActivityCatalogTests: XCTestCase {
         XCTAssertEqual(ActivityCatalog(databaseURL: absent).digest(since: cycleStart), .empty)
     }
 
+    /// A database that exists but cannot be opened is a failure, not a quiet cycle: the
+    /// digest must keep its empty stats but say the editor's store could not be read.
     func testUnreadableDatabaseYieldsAnEmptyDigest() throws {
         try Data("this is not a database".utf8).write(to: databaseURL)
-        XCTAssertEqual(digest(), .empty)
+        XCTAssertEqual(digest(), ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.gui]
+        ))
     }
 
     /// Cursor could rename a table tomorrow. Losing the activity half must not cost the
-    /// cost half, so a missing table is empty rather than fatal.
+    /// cost half, so a missing table is empty rather than fatal — but it is still a
+    /// failure the report should say so about.
     func testAStoreWithoutTheExpectedTablesYieldsAnEmptyDigest() throws {
         var handle: OpaquePointer?
         XCTAssertEqual(sqlite3_open(databaseURL.path, &handle), SQLITE_OK)
         XCTAssertEqual(sqlite3_exec(handle, "CREATE TABLE somethingElse (a TEXT)", nil, nil, nil), SQLITE_OK)
         sqlite3_close_v2(handle)
-        XCTAssertEqual(digest(), .empty)
+        XCTAssertEqual(digest(), ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.gui]
+        ))
     }
 }

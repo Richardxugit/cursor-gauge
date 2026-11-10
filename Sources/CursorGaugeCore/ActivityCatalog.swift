@@ -192,8 +192,12 @@ public struct ActivityDigest: Equatable {
     public let byConversation: [String: ConversationActivity]
     /// Chronological, one entry per day that saw activity.
     public let daily: [DayActivity]
+    /// Front ends whose stores exist but could not be read. A source listed here
+    /// contributed nothing reliable; a source that was read and had nothing to say is
+    /// *not* listed — that is a quiet cycle, not a failure.
+    public let unavailableSources: Set<ActivitySource>
 
-    /// What an absent, locked, corrupt or renamed store yields.
+    /// What a readable store with nothing to say yields.
     public static let empty = ActivityDigest(
         tools: [], prompts: .empty, files: [], byConversation: [:], daily: []
     )
@@ -260,19 +264,22 @@ public struct ActivityDigest: Equatable {
             ),
             files: fileTypes.values.sorted { ($0.operations, $1.ext) > ($1.operations, $0.ext) },
             byConversation: conversations,
-            daily: days.values.sorted { $0.day < $1.day }
+            daily: days.values.sorted { $0.day < $1.day },
+            unavailableSources: unavailableSources.union(other.unavailableSources)
         )
     }
 
     public init(
         tools: [ToolUsage], prompts: PromptStats, files: [FileTypeUsage],
-        byConversation: [String: ConversationActivity], daily: [DayActivity]
+        byConversation: [String: ConversationActivity], daily: [DayActivity],
+        unavailableSources: Set<ActivitySource> = []
     ) {
         self.tools = tools
         self.prompts = prompts
         self.files = files
         self.byConversation = byConversation
         self.daily = daily
+        self.unavailableSources = unavailableSources
     }
 }
 
@@ -308,7 +315,17 @@ public final class ActivityCatalog {
     /// be arithmetically true and completely misleading, so the caller's window is applied
     /// to every query here.
     public func digest(since: Date) -> ActivityDigest {
-        guard let database = ReadOnlyDatabase(url: databaseURL) else { return .empty }
+        guard let database = ReadOnlyDatabase(url: databaseURL) else {
+            // An absent database is a readable, quiet store: never using the editor is
+            // normal. A database that exists but cannot be opened is a failure.
+            if FileManager.default.fileExists(atPath: databaseURL.path) {
+                return ActivityDigest(
+                    tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+                    unavailableSources: [.gui]
+                )
+            }
+            return .empty
+        }
         let start = Self.boundary.string(from: since)
 
         // Extract every field the aggregations need in one pass over the large table. In
@@ -333,18 +350,29 @@ public final class ActivityCatalog {
             FROM cursorDiskKV
             WHERE \(Self.bubblesInWindow)
             """, [start]) { _ in }
-        // A missing bubble table must remain distinguishable from a genuinely quiet window.
-        guard created else { return .empty }
+        // A missing bubble table means the store exists but is not in a shape this code can
+        // read — a failure worth stating, unlike a genuinely quiet window.
+        guard created else {
+            return ActivityDigest(
+                tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+                unavailableSources: [.gui]
+            )
+        }
         defer { database.query("DROP TABLE IF EXISTS temp.digest_bubbles") { _ in } }
 
-        guard let tools = tools(database) else { return .empty }
+        // A later failure keeps whatever was already read: partial data beats none, and the
+        // unavailable marker tells the report the numbers are not the whole story.
+        let tools = tools(database)
+        var unavailableSources: Set<ActivitySource> = []
+        if tools == nil { unavailableSources.insert(.gui) }
         let files = files(database)
         return ActivityDigest(
-            tools: tools,
+            tools: tools ?? [],
             prompts: prompts(database),
             files: files.overall,
             byConversation: conversations(database, fileTypes: files.perConversation),
-            daily: daily(database)
+            daily: daily(database),
+            unavailableSources: unavailableSources
         )
     }
 
