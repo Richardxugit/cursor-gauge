@@ -71,12 +71,19 @@ enum ReportCommand {
         case .html:
             contents = ReportRenderer.html(report)
         case .json(let withPromptText):
+            let promptResult = withPromptText ? catalog.promptText(since: snapshot.cycleStart) : nil
             contents = try ReportExport.build(
                 report: report,
                 activity: activity,
                 // Read only on an explicit opt-in, so the default path cannot leak text by
                 // omission.
-                promptText: withPromptText ? catalog.promptText(since: snapshot.cycleStart) : nil
+                promptText: promptResult?.texts,
+                promptTextCoverage: withPromptText
+                    ? PromptTextCoverage(
+                        gui: promptResult?.unavailable == true ? "unavailable" : "complete",
+                        cli: "unsupported"
+                    )
+                    : nil
             ).json()
         }
 

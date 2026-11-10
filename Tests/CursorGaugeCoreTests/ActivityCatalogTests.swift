@@ -333,10 +333,30 @@ final class ActivityCatalogTests: XCTestCase {
             promptBubble(conversation: "c2", text: "other"),
             promptBubble(conversation: "c1", text: "too early", at: "2026-07-01T09:00:00.000Z"),
         ])
-        let text = ActivityCatalog(databaseURL: databaseURL, timeZone: TimeZone(secondsFromGMT: 0)!)
+        let result = ActivityCatalog(databaseURL: databaseURL, timeZone: TimeZone(secondsFromGMT: 0)!)
             .promptText(since: cycleStart)
-        XCTAssertEqual(text["c1"], ["first", "second"], "in order, and only inside the window")
-        XCTAssertEqual(text["c2"], ["other"])
+        XCTAssertEqual(result.texts["c1"], ["first", "second"], "in order, and only inside the window")
+        XCTAssertEqual(result.texts["c2"], ["other"])
+        XCTAssertFalse(result.unavailable, "a read that ran to completion is not unavailable")
+    }
+
+    /// An absent editor database is a readable, quiet store — normal for someone who never
+    /// uses the editor — so prompt text must report complete-with-nothing, not a failure.
+    func testMissingDatabaseReportsPromptTextAsReadableEmpty() {
+        let result = ActivityCatalog(databaseURL: databaseURL, timeZone: TimeZone(secondsFromGMT: 0)!)
+            .promptText(since: cycleStart)
+        XCTAssertEqual(result.texts, [:])
+        XCTAssertFalse(result.unavailable)
+    }
+
+    /// A store that exists but cannot be opened is a failure worth stating, unlike a
+    /// genuinely quiet cycle.
+    func testANonSQLiteFileMakesPromptTextUnavailable() throws {
+        try "this is not a database".write(to: databaseURL, atomically: true, encoding: .utf8)
+        let result = ActivityCatalog(databaseURL: databaseURL, timeZone: TimeZone(secondsFromGMT: 0)!)
+            .promptText(since: cycleStart)
+        XCTAssertEqual(result.texts, [:])
+        XCTAssertTrue(result.unavailable)
     }
 
     func testAConversationWithNoHeaderStillReportsItsActivity() throws {

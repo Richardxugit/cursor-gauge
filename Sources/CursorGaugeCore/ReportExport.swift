@@ -1,5 +1,21 @@
 import Foundation
 
+/// How completely the prompt text was read, per front end.
+///
+/// Stated in the export so a consumer never has to guess whether an empty prompt list
+/// means "no prompts" or "could not read".
+public struct PromptTextCoverage: Encodable {
+    /// `complete` or `unavailable` for the editor store.
+    public let gui: String
+    /// Always `unsupported`: this export does not claim to recover CLI prompt text.
+    public let cli: String
+
+    public init(gui: String, cli: String) {
+        self.gui = gui
+        self.cli = cli
+    }
+}
+
 /// The report as JSON, for feeding to something else.
 ///
 /// The HTML report answers the questions it was designed around. This exists for the ones
@@ -34,6 +50,9 @@ public struct ReportExport: Encodable {
     /// Whether prompt text is present. Stated so a consumer never has to guess whether an
     /// empty `promptText` means "not collected" or "no prompts".
     public let includesPromptText: Bool
+    /// How completely each front end's prompt text was read. Present only when prompt text
+    /// was requested, so its absence means "not collected" rather than "no prompts".
+    public let promptTextCoverage: PromptTextCoverage?
 
     public struct ActivityAvailability: Encodable {
         public let gui: String
@@ -160,6 +179,7 @@ public struct ReportExport: Encodable {
         report: UsageReport,
         activity: ActivityDigest,
         promptText: [String: [String]]? = nil,
+        promptTextCoverage: PromptTextCoverage? = nil,
         timeZone: TimeZone = .current
     ) -> ReportExport {
         let day = DateFormatter()
@@ -194,7 +214,7 @@ public struct ReportExport: Encodable {
                 firstActivity: record?.firstActivity,
                 lastActivity: record?.lastActivity,
                 promptLengths: record?.promptLengths ?? [],
-                promptText: promptText?[id] ?? (promptText == nil ? nil : [])
+                promptText: promptText == nil ? nil : (source == .gui ? promptText?[id] ?? [] : nil)
             )
         }.sorted { ($0.cents, $1.id) > ($1.cents, $0.id) }
 
@@ -244,7 +264,8 @@ public struct ReportExport: Encodable {
                 gui: report.unavailableActivitySources.contains(.gui) ? "unavailable" : "available",
                 cli: report.unavailableActivitySources.contains(.cli) ? "unavailable" : "available"
             ),
-            includesPromptText: promptText != nil
+            includesPromptText: promptText != nil,
+            promptTextCoverage: promptTextCoverage
         )
     }
 

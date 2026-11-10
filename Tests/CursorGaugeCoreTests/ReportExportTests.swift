@@ -17,7 +17,8 @@ final class ReportExportTests: XCTestCase {
         catalog: [String: SessionRecord] = [:],
         activity: ActivityDigest = .empty,
         truncated: Bool = false,
-        promptText: [String: [String]]? = nil
+        promptText: [String: [String]]? = nil,
+        promptTextCoverage: PromptTextCoverage? = nil
     ) -> ReportExport {
         let snapshot = UsageSnapshot(
             settledSpendCents: events.reduce(0) { $0 + $1.cents },
@@ -33,7 +34,9 @@ final class ReportExportTests: XCTestCase {
             activity: activity, timeZone: utc, now: now
         )
         return ReportExport.build(report: report, activity: activity,
-                                  promptText: promptText, timeZone: utc)
+                                  promptText: promptText,
+                                  promptTextCoverage: promptTextCoverage,
+                                  timeZone: utc)
     }
 
     private func digest(
@@ -146,6 +149,67 @@ final class ReportExportTests: XCTestCase {
             promptText: [:]
         )
         XCTAssertEqual(result.conversations.first?.promptText, [])
+    }
+
+    /// Opting in must state how complete the read was, so a consumer can tell a full read
+    /// apart from a partial one.
+    func testCoverageIsExportedWhenPromptTextIsRequested() throws {
+        let result = export(
+            events: [event("c1", cents: 100)],
+            activity: digest(["c1": ConversationActivity(prompts: 1)]),
+            promptText: ["c1": ["fix the tracking view"]],
+            promptTextCoverage: PromptTextCoverage(gui: "complete", cli: "unsupported")
+        )
+        XCTAssertEqual(result.promptTextCoverage?.gui, "complete")
+        XCTAssertEqual(result.promptTextCoverage?.cli, "unsupported")
+
+        let parsed = try object(result)
+        let coverage = try XCTUnwrap(parsed["promptTextCoverage"] as? [String: String])
+        XCTAssertEqual(coverage, ["cli": "unsupported", "gui": "complete"])
+    }
+
+    /// Without the opt-in the coverage key is absent, not null — the default report stays
+    /// content-free in shape as well as in fact.
+    func testCoverageIsAbsentUnlessPromptTextWasRequested() throws {
+        let result = export(events: [event("c1", cents: 100)])
+        XCTAssertNil(result.promptTextCoverage)
+        XCTAssertFalse(try result.json().contains("promptTextCoverage"))
+    }
+
+    /// CLI prompt text is never recovered, so an opted-in CLI conversation must say "not
+    /// collected" (null) rather than "known to have none" ([]). Unknown-source
+    /// conversations — no local record at all — are the same.
+    func testAnOptedInCliConversationCarriesNoPromptText() throws {
+        let result = export(
+            events: [
+                event("cli-1", cents: 40),
+                event("gui-1", cents: 60),
+                event("bc-1", cents: 20, cloud: true),
+            ],
+            activity: digest([
+                "cli-1": ConversationActivity(prompts: 2, source: .cli),
+                "gui-1": ConversationActivity(prompts: 1),
+            ]),
+            promptText: [:]
+        )
+        XCTAssertNil(result.conversations.first { $0.id == "cli-1" }?.promptText,
+                     "CLI text is unsupported, so null — never an empty array")
+        XCTAssertEqual(result.conversations.first { $0.id == "gui-1" }?.promptText, [],
+                       "an editor chat with no prompts is known to have none")
+        XCTAssertNil(result.conversations.first { $0.id == "bc-1" }?.promptText,
+                     "an unknown source cannot have had its text collected")
+    }
+
+    /// A read that failed partway must be reported as such, not silently passed off as whole.
+    func testAnUnavailableCoverageIsPreserved() throws {
+        let result = export(
+            events: [event("c1", cents: 100)],
+            promptText: [:],
+            promptTextCoverage: PromptTextCoverage(gui: "unavailable", cli: "unsupported")
+        )
+        let parsed = try object(result)
+        let coverage = try XCTUnwrap(parsed["promptTextCoverage"] as? [String: String])
+        XCTAssertEqual(coverage, ["cli": "unsupported", "gui": "unavailable"])
     }
 
     // MARK: - The document

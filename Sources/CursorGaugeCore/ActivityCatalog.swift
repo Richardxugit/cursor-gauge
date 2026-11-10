@@ -181,6 +181,18 @@ public struct DayActivity: Equatable, Identifiable {
     }
 }
 
+/// The prompts themselves, by conversation, plus whether the read completed.
+public struct PromptTextResult {
+    public let texts: [String: [String]]
+    /// True when the store exists but the prompt read did not run to completion.
+    public let unavailable: Bool
+
+    public init(texts: [String: [String]], unavailable: Bool) {
+        self.texts = texts
+        self.unavailable = unavailable
+    }
+}
+
 /// Everything the local store knows about a window of work, and nothing about its cost.
 public struct ActivityDigest: Equatable {
     /// Ranked by call count, descending.
@@ -575,14 +587,21 @@ public final class ActivityCatalog {
         }
     }
 
-    /// The prompts themselves, by conversation.
+    /// The prompts themselves, by conversation, plus whether the read completed.
     ///
     /// Deliberately a separate call rather than a field on `ActivityDigest`: the digest
     /// promises to carry statistics and not content, and that promise is only worth
     /// something if reading the text requires asking for it by name. Nothing in the app
     /// calls this — only an export the user has explicitly opted into.
-    public func promptText(since: Date) -> [String: [String]] {
-        guard let database = ReadOnlyDatabase(url: databaseURL) else { return [:] }
+    public func promptText(since: Date) -> PromptTextResult {
+        // An absent database is a readable, quiet store: never using the editor is normal.
+        // A database that exists but cannot be opened is a failure worth stating.
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+            return PromptTextResult(texts: [:], unavailable: false)
+        }
+        guard let database = ReadOnlyDatabase(url: databaseURL) else {
+            return PromptTextResult(texts: [:], unavailable: true)
+        }
         var found: [String: [String]] = [:]
         database.query("""
             SELECT substr(key, 10, instr(substr(key, 10), ':') - 1) AS conversation,
@@ -594,7 +613,7 @@ public final class ActivityCatalog {
             guard let id = row.text(0), !id.isEmpty, let text = row.text(1) else { return }
             found[id, default: []].append(text)
         }
-        return found
+        return PromptTextResult(texts: found, unavailable: database.hadQueryFailure)
     }
 
     private func daily(_ database: ReadOnlyDatabase) -> [DayActivity] {
