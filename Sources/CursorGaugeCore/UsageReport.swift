@@ -183,7 +183,9 @@ public struct UsageReport {
                 toolCalls: records.reduce(0) { $0 + $1.toolCalls },
                 linesAdded: records.reduce(0) { $0 + $1.linesAdded }
             )
-        }.sorted { ($0.cents, $1.workspace) > ($1.cents, $0.workspace) }
+        }.sorted {
+            ($0.cents, $1.workspace, $1.workspacePath ?? "") > ($1.cents, $0.workspace, $0.workspacePath ?? "")
+        }
 
         // MARK: Sessions
         //

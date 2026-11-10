@@ -173,6 +173,21 @@ final class UsageReportTests: XCTestCase {
         XCTAssertEqual(result.workspaces.first?.workspacePath, "/clients/a/website")
     }
 
+    /// Equal cost and basename leave the old sort without a tie-break, so row order would
+    /// depend on dictionary iteration. The path breaks the tie deterministically.
+    func testSameNamedReposWithEqualCostOrderByPath() {
+        let result = report(
+            events: [event("a-1", cents: 100), event("b-1", cents: 100)],
+            activity: activity([
+                "a-1": conversation(workspace: "website", path: "/clients/a/website"),
+                "b-1": conversation(workspace: "website", path: "/clients/b/website"),
+            ])
+        )
+        XCTAssertEqual(result.workspaces.map(\.workspacePath),
+                       ["/clients/a/website", "/clients/b/website"],
+                       "equal cents and basename must not leave order to map iteration")
+    }
+
     // MARK: - The three residual buckets
 
     /// A cloud agent's chat lives on Cursor's servers, so it has no local row and no repo.
