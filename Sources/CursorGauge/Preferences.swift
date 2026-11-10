@@ -45,6 +45,10 @@ final class Preferences {
 
     private let defaults: UserDefaults
 
+    /// The installed app's bundle identifier. The CLI has no bundle, so it must resolve the
+    /// app's domain explicitly to share the menu's team selection.
+    static let applicationBundleIdentifier = "com.pxu.cursorgauge"
+
     private enum Key {
         static let displayMode = "displayMode"
         static let paceMode = "paceModeEnabled"
@@ -53,13 +57,26 @@ final class Preferences {
         static let selectedTeamID = "selectedTeamID"
     }
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        displayMode = DisplayMode(rawValue: defaults.string(forKey: Key.displayMode) ?? "") ?? .money
-        paceModeEnabled = defaults.object(forKey: Key.paceMode) as? Bool ?? true
-        warningPercent = defaults.object(forKey: Key.warningPercent) as? Double ?? 60
-        criticalPercent = defaults.object(forKey: Key.criticalPercent) as? Double ?? 85
-        selectedTeamID = defaults.object(forKey: Key.selectedTeamID) as? Int
+    init(defaults: UserDefaults? = nil) {
+        self.defaults = defaults ?? Preferences.defaultStore()
+        displayMode = DisplayMode(rawValue: self.defaults.string(forKey: Key.displayMode) ?? "") ?? .money
+        paceModeEnabled = self.defaults.object(forKey: Key.paceMode) as? Bool ?? true
+        warningPercent = self.defaults.object(forKey: Key.warningPercent) as? Double ?? 60
+        criticalPercent = self.defaults.object(forKey: Key.criticalPercent) as? Double ?? 85
+        selectedTeamID = self.defaults.object(forKey: Key.selectedTeamID) as? Int
+    }
+
+    /// Picks the store preferences live in. The app itself reads and writes its standard
+    /// defaults; an unbundled process (the CLI) has no bundle, so it reaches into the app's
+    /// domain explicitly to share one team selection, falling back to standard when the
+    /// app's domain does not exist yet.
+    static func defaultStore(
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier,
+        standard: UserDefaults = .standard,
+        application: UserDefaults? = UserDefaults(suiteName: applicationBundleIdentifier)
+    ) -> UserDefaults {
+        if bundleIdentifier == applicationBundleIdentifier { return standard }
+        return application ?? standard
     }
 
     var thresholds: GaugeThresholds {
