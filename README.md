@@ -250,7 +250,8 @@ Settings persist across launches:
 - **Menu bar:** amount spent, percentage of limit, or icon only.
 - **Team:** `Auto — most usage` by default, or a specific team. Switching teams clears the
   old team's figures immediately and refreshes all spend, model and session data in the new
-  team context; an in-flight answer from the previous team is discarded.
+  team context; an in-flight answer from the previous team is discarded. Reports and
+  `--dry-run` use the same selection.
 - **Warnings:** amber and red thresholds, and whether pace warnings are enabled.
 - **Startup:** open at login, available when running as an installed app bundle.
 
@@ -305,7 +306,9 @@ Chat titles and repository names *do* appear — a title can carry a ticket numb
 the file the way you'd treat your branch names. The page says this on its own face.
 
 If Cursor's database can't be read, the report still renders the cost half and states that
-the rest is missing, rather than showing empty sections.
+the rest is missing, rather than showing empty sections. A readable store with no activity
+is described as quiet, not broken. Incomplete event coverage is marked as partial, and the
+JSON export reports editor/CLI readability independently under `activityAvailability`.
 
 ### Both front ends
 
@@ -396,7 +399,9 @@ Background polls fetch only the headline summary and latest-request marker. Open
 menu upgrades to a full read. Full reads incrementally top up the event feed with a
 ten-minute overlap for late-arriving events, deduplicate adjusted rows, and periodically
 reconcile against the whole billing cycle; cycle rollover or a truncated feed also forces
-a full rebuild. Reports always export the whole event window rather than a top-up.
+a full rebuild. Full reads resolve the session tree once on a background thread before
+publishing; summary polls do no session-name lookup. Reports always export the whole event
+window rather than a top-up.
 
 There is also an immediate refresh on menu open, on ⌘R, and on wake from sleep. Repeated
 failures back off exponentially to a 15-minute ceiling. A reading old enough to mislead is
