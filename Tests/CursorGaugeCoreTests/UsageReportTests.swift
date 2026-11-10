@@ -29,11 +29,13 @@ final class UsageReportTests: XCTestCase {
     }
 
     private func conversation(
-        workspace: String?, prompts: Int = 0, toolCalls: Int = 0, linesAdded: Int = 0
+        workspace: String?, prompts: Int = 0, toolCalls: Int = 0, linesAdded: Int = 0,
+        source: ActivitySource = .gui
     ) -> ConversationActivity {
         ConversationActivity(
             workspace: workspace, workspacePath: workspace.map { "/Users/pxu/Desktop/\($0)" },
-            mode: "agent", prompts: prompts, toolCalls: toolCalls, linesAdded: linesAdded
+            mode: "agent", prompts: prompts, toolCalls: toolCalls, linesAdded: linesAdded,
+            source: source
         )
     }
 
@@ -174,6 +176,37 @@ final class UsageReportTests: XCTestCase {
                        "the chat with activity but no spend; the idle one is not work")
         XCTAssertEqual(result.totalCents, 100, "unbilled work must not inflate the total")
         XCTAssertEqual(result.workspaces.map(\.workspace), ["ko-services"])
+    }
+
+    // MARK: - Front ends
+
+    /// Billed work with no local record — a cloud agent, a ledger-only chat, or an event
+    /// with no conversation id at all — must not be dressed up as editor work. Labelling it
+    /// `unknown` keeps the editor/CLI split honest.
+    func testUnknownActivityIsNotLabelledAsEditorWork() throws {
+        let result = report(
+            events: [
+                event("gui-1", cents: 200),
+                event("cli-1", cents: 100),
+                event(nil, cents: 42),
+                event("ghost", cents: 58),
+            ],
+            activity: activity([
+                "gui-1": conversation(workspace: "ko-services"),
+                "cli-1": conversation(workspace: "ko-services", source: .cli),
+            ])
+        )
+
+        let gui = try XCTUnwrap(result.bySource[.gui])
+        XCTAssertEqual(gui.cents, 200, "only the known GUI chat belongs to the editor")
+        XCTAssertEqual(gui.conversations, 1)
+
+        let cli = try XCTUnwrap(result.bySource[.cli])
+        XCTAssertEqual(cli.cents, 100)
+
+        let unknown = try XCTUnwrap(result.bySource[.unknown])
+        XCTAssertEqual(unknown.cents, 100, "the no-id event plus the unknown conversation")
+        XCTAssertEqual(unknown.conversations, 1, "a nil conversation id is not a chat")
     }
 
     // MARK: - The identity that proves nothing was lost

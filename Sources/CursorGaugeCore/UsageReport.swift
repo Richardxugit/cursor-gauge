@@ -225,7 +225,7 @@ public struct UsageReport {
         var seenPerSource: [ActivitySource: Set<String>] = [:]
         for event in events {
             let source = event.conversationID
-                .flatMap { activity.byConversation[$0]?.source } ?? .gui
+                .flatMap { activity.byConversation[$0]?.source } ?? .unknown
             var entry = bySource[source] ?? (0, 0)
             entry.cents += event.cents
             bySource[source] = entry

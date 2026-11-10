@@ -12,6 +12,8 @@ public enum ActivitySource: String, Equatable, Codable, Sendable, CaseIterable {
     case gui
     /// `cursor-agent` in a terminal, recorded under `~/.cursor/chats`.
     case cli
+    /// Billed or exported work with no local record, or an event with no conversation id.
+    case unknown
 }
 
 /// One tool, and how it fared.
