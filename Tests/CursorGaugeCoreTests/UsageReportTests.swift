@@ -225,6 +225,24 @@ final class UsageReportTests: XCTestCase {
         XCTAssertEqual(result.workspaces.map(\.workspace), ["ko-services"])
     }
 
+    /// A chat whose billed events all cost zero did work without costing anything. Its id
+    /// appears in the event feed, so "was an event seen" cannot decide the count — only
+    /// whether the chat's own spend is zero.
+    func testAConversationWhoseEventsCostNothingCountsAsFree() throws {
+        let result = report(
+            events: [event("c1", cents: 0), event("c2", cents: 50)],
+            activity: activity([
+                "c1": conversation(workspace: "ko-services", prompts: 2),
+                "c2": conversation(workspace: "ko-services", prompts: 1),
+            ])
+        )
+        XCTAssertEqual(result.unbilledConversations, 1,
+                       "the zero-cost chat did work, so it is free of charge")
+        XCTAssertEqual(result.totalCents, 50, "zero-cent events add nothing to the total")
+        let c1 = try XCTUnwrap(result.ledger.first { $0.id == "c1" })
+        XCTAssertEqual(c1.cents, 0, "the zero-cost chat stays in the ledger at zero")
+    }
+
     // MARK: - Front ends
 
     /// Billed work with no local record — a cloud agent, a ledger-only chat, or an event

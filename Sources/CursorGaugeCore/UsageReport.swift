@@ -252,8 +252,10 @@ public struct UsageReport {
         // MARK: Unbilled work
         //
         // Chats that did something in the window and cost nothing. Counted, never costed:
-        // they are evidence of cached or free requests, not of spend.
-        let billed = Set(events.compactMap(\.conversationID))
+        // they are evidence of cached or free requests, not of spend. A chat whose events
+        // sum to zero is free even though its id appears in the feed, so the ledger — not
+        // the presence of any event — decides who billed.
+        let billed = Set(perConversation.filter { $0.value.cents != 0 }.keys)
         let unbilled = activity.byConversation.filter { id, record in
             !billed.contains(id) && (record.prompts > 0 || record.toolCalls > 0)
         }.count
