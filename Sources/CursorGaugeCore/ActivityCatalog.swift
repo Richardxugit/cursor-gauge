@@ -2,7 +2,8 @@ import Foundation
 
 // MARK: - What a window of local activity looks like
 
-/// Which of Cursor's two front ends did the work.
+/// Which of Cursor's two front ends did the work — or `unknown`, which is not a front end
+/// but a billed chat that left no local record.
 ///
 /// They are genuinely different tools with different vocabularies — the editor calls it
 /// `read_file_v2`, the CLI calls it `Read` — so the source travels with the data rather

@@ -77,8 +77,8 @@ public struct UsageReport {
     /// Chats that did work in this window but cost nothing — cached or free requests.
     /// A count only: they carry no spend, so adding them to a total would be wrong.
     public let unbilledConversations: Int
-    /// Spend and chat count per front end, so terminal work is visible as its own thing
-    /// rather than blended into the editor's totals.
+    /// Spend and chat count per source. GUI and CLI are the two front ends; `unknown`
+    /// holds billed work with no local record, so it is never drawn as editor spend.
     public let bySource: [ActivitySource: (cents: Double, conversations: Int)]
 
     public let totalCents: Double
@@ -217,10 +217,11 @@ public struct UsageReport {
                              requests: entry.requests, isCloud: entry.cloud)
         }.sorted { ($0.cents, $1.id) > ($1.cents, $0.id) }
 
-        // MARK: Front ends
+        // MARK: Sources
         //
-        // Which of Cursor's two faces the money went through. Derived from the same events as
-        // everything else, so it cannot disagree with the repository split.
+        // Which front end the money went through, or `unknown` when the chat left no local
+        // record. Derived from the same events as everything else, so it cannot disagree
+        // with the repository split.
         var bySource: [ActivitySource: (cents: Double, conversations: Int)] = [:]
         var seenPerSource: [ActivitySource: Set<String>] = [:]
         for event in events {
