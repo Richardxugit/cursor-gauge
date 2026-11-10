@@ -251,7 +251,8 @@ Settings persist across launches:
 - **Team:** `Auto — most usage` by default, or a specific team. Switching teams clears the
   old team's figures immediately and refreshes all spend, model and session data in the new
   team context; an in-flight answer from the previous team is discarded. Reports and
-  `--dry-run` use the same selection.
+  `--dry-run` use the same selection — including when the CLI runs outside the app bundle
+  (`swift run`): both read the same preferences domain.
 - **Warnings:** amber and red thresholds, and whether pace warnings are enabled.
 - **Startup:** open at login, available when running as an installed app bundle.
 
@@ -266,6 +267,8 @@ CursorGauge --report ~/usage.html    # or a path you choose
 
 Or **Usage Report…** (⌘E) in the menu. Either way you get one self-contained HTML file —
 no scripts, no web fonts, nothing fetched — that opens offline and survives being emailed.
+If the browser can't be opened to show the finished report, the menu says so and shows
+the path the file was written to, instead of failing silently.
 
 **What makes it worth having** is that it joins two sources the app already reads:
 
@@ -286,6 +289,8 @@ Where the money went
   Unattributed      $5.93    billed work whose chat isn't in the local store
 ```
 
+A chat whose billed events all cost zero counts as free of charge.
+
 Also: spend by model, cost and effort per day, your chats ranked with the tool counts
 behind them, which tools ran and how often they failed, what file types were touched, and
 how you asked — prompt count, typical length, and your `/ko-feature`-style commands ranked.
@@ -294,10 +299,11 @@ how you asked — prompt count, typical length, and your `/ko-feature`-style com
 
 - **Both halves cover the same window.** Activity is filtered to the billing cycle, so six
   months of tool counts can't sit beside one cycle of spend and imply a rate.
-- **Nothing is filed under a repo it didn't come from.** Spend that can't be traced goes to
-  one of three named buckets — cloud agents, unattributed, or free of charge — and the
-  footer states whether the buckets add up to the cycle total. If they don't, it says so
-  rather than quietly rounding.
+- **Nothing is filed under a repo it didn't come from.** Repos are keyed by full path, so
+  two directories that share a name stay separate; when same-named rows do appear, each
+  shows its full path. Spend that can't be traced goes to one of three named buckets —
+  cloud agents, unattributed, or free of charge — and the footer states whether the buckets
+  add up to the cycle total. If they don't, it says so rather than quietly rounding.
 - **It reads statistics, not content.** Prompt *lengths* and *counts*, never prompt text;
   file *paths*, never file contents. Verified against a live report: none of 42 real prompt
   openings appear in the output.
@@ -322,7 +328,9 @@ be named: on the cycle this was built against, **the entire "Unattributed" bucke
 out to be CLI work** — $6.68 of it, every cent. Reading both stores closed it to $1.03,
 named all eleven terminal chats, and put their spend against the right repositories.
 
-The report shows the split, and each chat carries a `source` of `gui` or `cli`.
+The report shows the split, and each chat carries a `source` of `gui` or `cli`. A
+chat with no local record in either store — cloud agents, or billed work whose chat
+isn't in either — carries `unknown`, and is never labelled editor work.
 
 Two limits, stated wherever the numbers appear:
 
@@ -334,6 +342,7 @@ Two limits, stated wherever the numbers appear:
   real data this is nearly exact: no CLI conversation ran longer than 1.5 hours, median four
   minutes. And roughly two thirds of its message blobs aren't plaintext, so CLI *activity*
   counts are a floor. Cost is unaffected — that comes from the billing API and is exact.
+  For the same reason, `--with-prompts` does not read CLI text (see the JSON section).
 
 ### JSON, for charts this report doesn't draw
 
@@ -369,11 +378,14 @@ prompt**. On one real cycle, from behaviour alone:
 Work type (KTLO / Feature / Bug) is the exception — it genuinely needs the text, because
 slash commands classify only ~10% of prompts. That's what `--with-prompts` is for.
 
-**`--with-prompts` sends nothing anywhere** — it only widens what the local file contains.
-But that file then holds everything you typed, which on a work account means client code
-and ticket detail. It's off by default for that reason, and the export states
-`includesPromptText` so a consumer never has to guess whether an empty field means "none"
-or "not collected".
+**`--with-prompts` sends nothing anywhere** — it only widens what the local file contains,
+and only with editor prompt text. It does not claim to recover CLI text: the export adds
+`promptTextCoverage`, stating `gui` as `complete` or `unavailable` and `cli` as
+`unsupported`, and CLI conversations carry a null `promptText` rather than an empty array.
+Nothing is decrypted or invented. The editor text it does export is everything you typed,
+which on a work account means client code and ticket detail. It's off by default for that
+reason, and the export states `includesPromptText` so a consumer never has to guess
+whether an empty field means "none" or "not collected".
 
 Every total reconciles four ways — conversations, repositories plus residuals, the daily
 series, and the cycle total all agree to the cent — and `attribution.reconciles` says so
