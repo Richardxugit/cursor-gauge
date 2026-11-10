@@ -6,10 +6,10 @@ import SQLite3
 /// Opened with `mode=ro` so Cursor's own write-ahead log is never disturbed — the app is a
 /// spectator on someone else's database and must stay one.
 ///
-/// Nothing here throws. Both callers treat the local store as a garnish: it supplies chat
-/// names and activity detail, never the spend figures. An absent, locked, corrupt or
-/// renamed database must cost the user detail and nothing else, so every failure path
-/// yields "no rows" and lets the caller carry on.
+/// Nothing here throws. Callers treat local stores as detail, never as the source of spend:
+/// an absent, locked, corrupt or renamed database must not discard cost data. Queries keep
+/// any rows read before a failure, and `hadQueryFailure` lets completeness-aware callers
+/// distinguish a partial read from a quiet store.
 final class ReadOnlyDatabase {
     private let handle: OpaquePointer
     /// Whether any statement failed to prepare or run to completion. Callers that render

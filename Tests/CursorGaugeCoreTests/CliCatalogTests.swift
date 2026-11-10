@@ -263,8 +263,9 @@ final class CliCatalogTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data("not json".utf8).write(to: directory.appendingPathComponent("meta.json"))
         let result = digest()
-        XCTAssertTrue(result.byConversation.isEmpty, "the conversation is skipped")
-        XCTAssertEqual(result.unavailableSources, [.cli],
-                       "a corrupt store is a failure, not a quiet cycle")
+        XCTAssertEqual(result, ActivityDigest(
+            tools: [], prompts: .empty, files: [], byConversation: [:], daily: [],
+            unavailableSources: [.cli]
+        ))
     }
 }

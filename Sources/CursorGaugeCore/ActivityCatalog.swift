@@ -192,9 +192,9 @@ public struct ActivityDigest: Equatable {
     public let byConversation: [String: ConversationActivity]
     /// Chronological, one entry per day that saw activity.
     public let daily: [DayActivity]
-    /// Front ends whose stores exist but could not be read. A source listed here
-    /// contributed nothing reliable; a source that was read and had nothing to say is
-    /// *not* listed — that is a quiet cycle, not a failure.
+    /// Front ends with at least one store/query read failure. Any rows already read are
+    /// retained, so a listed source can still contribute partial figures. A source that was
+    /// read and had nothing to say is *not* listed — that is a quiet cycle, not a failure.
     public let unavailableSources: Set<ActivitySource>
 
     /// What a readable store with nothing to say yields.

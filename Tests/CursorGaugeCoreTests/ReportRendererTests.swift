@@ -152,6 +152,19 @@ final class ReportRendererTests: XCTestCase {
         XCTAssertTrue(html.contains("could not be read"))
     }
 
+    /// A failed query can leave useful rows behind. The banner must describe incomplete
+    /// activity, not claim that none of the rendered data could be read.
+    func testBothSourcesWithPartialActivityAreDescribedAsIncomplete() {
+        let html = page(events: [event("c1", cents: 100)], activity: digest(
+            tools: [ToolUsage(name: "read_file_v2", calls: 2)],
+            unavailable: [.gui, .cli]
+        ))
+        XCTAssertTrue(html.contains("Some editor and CLI activity could not be read"))
+        XCTAssertTrue(html.contains("The readable activity is shown"))
+        XCTAssertTrue(html.contains("incomplete"))
+        XCTAssertFalse(html.contains("Neither the editor"))
+    }
+
     /// Both completeness states can be true at once: the feed was short *and* a local
     /// store was unreadable.
     func testThePartialAndUnavailableBannersCanAppearTogether() {

@@ -62,6 +62,15 @@ public enum ReportRenderer {
     private static func activityNotice(_ report: UsageReport) -> String {
         let unavailable = report.unavailableActivitySources
         if !unavailable.isEmpty {
+            if report.hasActivity {
+                let source = switch (unavailable.contains(.gui), unavailable.contains(.cli)) {
+                case (true, true): "editor and CLI"
+                case (true, false): "editor"
+                case (false, true): "CLI"
+                case (false, false): ""
+                }
+                return banner("Some \(source) activity could not be read. The readable activity is shown, but local totals are incomplete. Cost coverage is unaffected.")
+            }
             let message: String
             switch (unavailable.contains(.gui), unavailable.contains(.cli)) {
             case (true, true):

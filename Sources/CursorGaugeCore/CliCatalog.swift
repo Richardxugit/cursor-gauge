@@ -181,8 +181,8 @@ public final class CliCatalog {
 
     /// Returns the conversation and whether its store was fully read. A missing `store.db`
     /// is fine — a conversation directory that has not finished writing contributes its
-    /// metadata alone. A `store.db` that exists but cannot be opened, lacks the blobs
-    /// table, or holds unreadable blobs is a partial read.
+    /// metadata alone. A `store.db` that exists but cannot be opened or whose blobs query
+    /// fails is a partial read; encrypted or nonplaintext rows are expected and skipped.
     private func conversation(
         at directory: URL, meta: Meta
     ) -> (conversation: Conversation, storeReadable: Bool) {

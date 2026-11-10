@@ -182,11 +182,10 @@ final class ReportExportTests: XCTestCase {
                        "a day is a calendar date, not a timestamp")
     }
 
-    /// A consumer must be able to tell a quiet cycle from an unreadable database, and a
-    /// complete total from a capped one, without guessing.
-    func testTheExportStatesWhatItCouldNotSee() {
-        let blind = export(events: [event("c1", cents: 100)], activity: .empty)
-        XCTAssertFalse(blind.hasActivity)
+    /// A readable store with no rows is quiet; actual local activity flips the flag.
+    func testTheExportStatesWhetherActivityWasSeen() {
+        let quiet = export(events: [event("c1", cents: 100)], activity: .empty)
+        XCTAssertFalse(quiet.hasActivity)
 
         let seeing = export(
             events: [event("c1", cents: 100)],
