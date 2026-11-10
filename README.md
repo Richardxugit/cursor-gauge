@@ -381,7 +381,8 @@ slash commands classify only ~10% of prompts. That's what `--with-prompts` is fo
 **`--with-prompts` sends nothing anywhere** — it only widens what the local file contains,
 and only with editor prompt text. It does not claim to recover CLI text: the export adds
 `promptTextCoverage`, stating `gui` as `complete` or `unavailable` and `cli` as
-`unsupported`, and CLI conversations carry a null `promptText` rather than an empty array.
+`unsupported`, and CLI conversations omit `promptText` entirely rather than exporting an
+empty array.
 Nothing is decrypted or invented. The editor text it does export is everything you typed,
 which on a work account means client code and ticket detail. It's off by default for that
 reason, and the export states `includesPromptText` so a consumer never has to guess

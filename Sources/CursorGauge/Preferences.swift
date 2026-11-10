@@ -74,8 +74,9 @@ final class Preferences {
     /// key, the suite reads nil and the init defaults apply, so a fresh install behaves the
     /// same as the app would.
     ///
-    /// The app's own process never needs the suite: the identifier match returns its
-    /// standard store before the eagerly-evaluated suite argument is consulted.
+    /// The app's own process never needs the suite: the suite argument is evaluated eagerly
+    /// at the call site, but when the identifier matches, the standard store is returned
+    /// without ever consulting it.
     static func defaultStore(
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
         standard: UserDefaults = .standard,
