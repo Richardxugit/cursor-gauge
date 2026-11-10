@@ -47,8 +47,9 @@ public struct ReportExport: Encodable {
     /// Per-front-end readability. Always contains both keys; availability does not imply
     /// that any activity was recorded.
     public let activityAvailability: ActivityAvailability
-    /// Whether prompt text is present. Stated so a consumer never has to guess whether an
-    /// empty `promptText` means "not collected" or "no prompts".
+    /// Whether prompt text was requested. It can be true with no text present — for an
+    /// empty editor read or a CLI-only cycle — so pair with `promptTextCoverage` rather than
+    /// guessing.
     public let includesPromptText: Bool
     /// How completely each front end's prompt text was read. Present only when prompt text
     /// was requested, so its absence means "not collected" rather than "no prompts".
@@ -167,14 +168,20 @@ public struct ReportExport: Encodable {
         public let lastActivity: Date?
         /// Prompt lengths in the order written.
         public let promptLengths: [Int]
-        /// Present only when the caller opted in. See `ReportCommand`.
+        /// Prompt text in the order written, present only when the caller opted in **and**
+        /// this chat ran in the editor. CLI and unknown-source chats are `nil` even when
+        /// opted in: the export does not claim to recover text it never read. See
+        /// `promptTextCoverage`.
         public let promptText: [String]?
     }
 
     // MARK: - Building
 
-    /// - Parameter promptText: prompts by conversation id, or `nil` to omit them entirely.
-    ///   Passing `nil` is the default everywhere; it has to be supplied deliberately.
+    /// - Parameter promptText: prompts by conversation id for editor chats, or `nil` to
+    ///   omit them entirely. Passing `nil` is the default everywhere; it has to be supplied
+    ///   deliberately.
+    /// - Parameter promptTextCoverage: what `promptText` covers, present whenever it was
+    ///   requested so a consumer never confuses an incomplete read with "no prompts".
     public static func build(
         report: UsageReport,
         activity: ActivityDigest,
