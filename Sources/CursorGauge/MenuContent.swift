@@ -447,7 +447,9 @@ struct MenuContent: View {
                     preferredTeamID: preferences.selectedTeamID
                 )
                 if !ReportCommand.open(written) {
-                    reportError = "The report was written to \(written.path) but could not be opened."
+                    // The write succeeded; only the handoff to the browser failed, so the
+                    // message must not read as though the report was never produced.
+                    reportError = "Report written to \(written.path), but it could not be opened automatically."
                 }
             } catch {
                 reportError = (error as? APIError)?.description
