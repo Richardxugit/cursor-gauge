@@ -46,7 +46,8 @@ final class Preferences {
     private let defaults: UserDefaults
 
     /// The installed app's bundle identifier. The CLI has no bundle, so it must resolve the
-    /// app's domain explicitly to share the menu's team selection.
+    /// app's domain explicitly to share the menu's team selection. Keep in sync with
+    /// `BUNDLE_ID` in `build.sh`.
     static let applicationBundleIdentifier = "com.pxu.cursorgauge"
 
     private enum Key {
@@ -68,8 +69,13 @@ final class Preferences {
 
     /// Picks the store preferences live in. The app itself reads and writes its standard
     /// defaults; an unbundled process (the CLI) has no bundle, so it reaches into the app's
-    /// domain explicitly to share one team selection, falling back to standard when the
-    /// app's domain does not exist yet.
+    /// domain explicitly. Every preference shares this store — the CLI mirrors the menu's
+    /// team selection, display mode and thresholds together. Before the app has written a
+    /// key, the suite reads nil and the init defaults apply, so a fresh install behaves the
+    /// same as the app would.
+    ///
+    /// The app's own process never needs the suite: the identifier match returns its
+    /// standard store before the eagerly-evaluated suite argument is consulted.
     static func defaultStore(
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
         standard: UserDefaults = .standard,
