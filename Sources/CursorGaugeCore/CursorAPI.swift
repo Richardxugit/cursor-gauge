@@ -187,7 +187,8 @@ public struct UsageSnapshot: Equatable {
     public let capturedAt: Date
     /// Per-chat costs for this cycle, subagents rolled into the chat that spawned them.
     public let sessions: SessionBreakdown
-    /// The page cap was reached, so the sessions list covers only part of the cycle.
+    /// The event feed is incomplete (page cap, or fewer rows than the API declared), so
+    /// the sessions list covers only part of the cycle.
     public let sessionsTruncated: Bool
     /// The individual billed requests behind `sessions`.
     ///
@@ -545,7 +546,7 @@ public final class CursorAPI {
 
     struct EventFeed {
         let events: [SessionEvent]
-        /// The page cap stopped us before the cycle was exhausted.
+        /// Fewer rows than the API declared: the cycle is only partly covered.
         let truncated: Bool
     }
 
@@ -562,7 +563,6 @@ public final class CursorAPI {
 
         var collected: [FilteredUsageResponse.Event] = []
         var reported: Int?
-        var exhaustedPages = true
 
         for page in 1...maxPages {
             let response = try await call(
@@ -584,7 +584,6 @@ public final class CursorAPI {
             // Stop on a short page too: a server that ignores `page` would otherwise have
             // us request the same rows until the cap.
             if batch.count < pageSize || (reported.map { collected.count >= $0 } ?? false) {
-                exhaustedPages = false
                 break
             }
         }
@@ -599,9 +598,10 @@ public final class CursorAPI {
                     isCloud: ($0.isHeadless ?? false) || $0.cloudAgentId != nil
                 )
             },
-            // Only a genuine cap hit counts as truncation. A server that simply reports a
-            // larger total than it serves is not us losing data.
-            truncated: exhaustedPages && (reported.map { collected.count < $0 } ?? false)
+            // Any shortfall against the declared total is incomplete coverage — whether we
+            // ran out of pages or the server stopped serving early. Without a declared
+            // total there is nothing to compare against.
+            truncated: reported.map { collected.count < $0 } ?? false
         )
     }
 }

@@ -53,10 +53,30 @@ public enum ReportRenderer {
         <header class="head">
           <h1>Cursor usage</h1>
           <p class="sub">Billing cycle \(escape(window)) · generated \(escape(generated))</p>
-          \(report.truncated ? banner("The events feed hit its page cap, so this cycle is only partly covered. Figures below are a floor, not a total.") : "")
-          \(report.hasActivity ? "" : banner("Cursor's local store could not be read, so this report covers cost only. Tools, prompts and repositories are unavailable."))
+          \(report.truncated ? banner("The events feed did not cover everything the billing API declared for this cycle. Figures below are a floor, not a total.") : "")
+          \(activityNotice(report))
         </header>
         """
+    }
+
+    private static func activityNotice(_ report: UsageReport) -> String {
+        let unavailable = report.unavailableActivitySources
+        if !unavailable.isEmpty {
+            let message: String
+            switch (unavailable.contains(.gui), unavailable.contains(.cli)) {
+            case (true, true):
+                message = "Neither the editor's nor the CLI's activity store was readable — the local activity could not be read. Cost coverage is unaffected."
+            case (true, false):
+                message = "The editor activity store could not be read. Local activity is incomplete; cost coverage is unaffected."
+            case (false, true):
+                message = "The CLI activity store could not be read. Local activity is incomplete; cost coverage is unaffected."
+            case (false, false):
+                return ""
+            }
+            return banner(message)
+        }
+        guard !report.hasActivity else { return "" }
+        return banner("Cursor's local stores recorded no activity in this cycle. This is a quiet cycle, not a read failure.")
     }
 
     private static func headline(_ report: UsageReport) -> String {

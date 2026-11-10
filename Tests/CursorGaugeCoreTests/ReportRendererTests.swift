@@ -9,7 +9,8 @@ final class ReportRendererTests: XCTestCase {
     private func page(
         events: [SessionEvent],
         catalog: [String: SessionRecord] = [:],
-        activity: ActivityDigest = .empty
+        activity: ActivityDigest = .empty,
+        truncated: Bool = false
     ) -> String {
         let snapshot = UsageSnapshot(
             settledSpendCents: events.reduce(0) { $0 + $1.cents },
@@ -18,6 +19,7 @@ final class ReportRendererTests: XCTestCase {
             cycleStart: cycleStart, cycleEnd: cycleEnd, todayCents: 0,
             models: [], lastActivity: nil, capturedAt: now,
             sessions: SessionBreakdown.build(events: events, catalog: catalog),
+            sessionsTruncated: truncated,
             events: events
         )
         let report = UsageReport.build(
@@ -34,10 +36,11 @@ final class ReportRendererTests: XCTestCase {
 
     private func digest(
         _ conversations: [String: ConversationActivity] = [:],
-        tools: [ToolUsage] = [], prompts: PromptStats = .empty, files: [FileTypeUsage] = []
+        tools: [ToolUsage] = [], prompts: PromptStats = .empty, files: [FileTypeUsage] = [],
+        unavailable: Set<ActivitySource> = []
     ) -> ActivityDigest {
         ActivityDigest(tools: tools, prompts: prompts, files: files,
-                       byConversation: conversations, daily: [])
+                       byConversation: conversations, daily: [], unavailableSources: unavailable)
     }
 
     // MARK: - Escaping
@@ -95,9 +98,11 @@ final class ReportRendererTests: XCTestCase {
         XCTAssertTrue(html.contains("$2.50"))
     }
 
-    func testAMissingLocalStoreIsStatedOnThePage() {
-        let html = page(events: [event("c1", cents: 100)], activity: .empty)
-        XCTAssertTrue(html.contains("local store could not be read"),
+    /// `.empty` is a readable store that had nothing to say — quiet, not blind. An
+    /// unreadable store is constructed explicitly and must be said so.
+    func testAnUnreadableLocalStoreIsStatedOnThePage() {
+        let html = page(events: [event("c1", cents: 100)], activity: digest(unavailable: [.gui]))
+        XCTAssertTrue(html.contains("editor activity store could not be read"),
                       "a cost-only report should say why the rest is absent")
     }
 
@@ -107,7 +112,53 @@ final class ReportRendererTests: XCTestCase {
             activity: digest(["c1": ConversationActivity(workspace: "ko-services")],
                              tools: [ToolUsage(name: "read_file_v2", calls: 10)])
         )
-        XCTAssertFalse(html.contains("local store could not be read"))
+        XCTAssertFalse(html.contains("could not be read"))
+    }
+
+    // MARK: - Completeness banners
+
+    /// The truncation banner must not claim the page cap: a short page with a larger
+    /// declared total is partial without ever hitting the cap.
+    func testTheTruncatedBannerDoesNotBlameThePageCap() {
+        let html = page(events: [event("c1", cents: 100)], truncated: true)
+        XCTAssertTrue(html.contains("did not cover everything the billing API declared"))
+        XCTAssertFalse(html.contains("page cap"))
+    }
+
+    /// A readable store with no activity is a quiet cycle, not a failure — the page says
+    /// so without accusing a store that was read fine.
+    func testAReadableStoreWithNoActivityGetsANeutralNote() {
+        let html = page(events: [event("c1", cents: 100)], activity: .empty)
+        XCTAssertTrue(html.contains("recorded no activity in this cycle"))
+        XCTAssertFalse(html.contains("could not be read"))
+    }
+
+    func testAnUnreadableEditorSourceIsNamed() {
+        let html = page(events: [event("c1", cents: 100)], activity: digest(unavailable: [.gui]))
+        XCTAssertTrue(html.contains("editor activity store could not be read"))
+        XCTAssertFalse(html.contains("CLI activity store could not be read"))
+    }
+
+    func testAnUnreadableCLISourceIsNamed() {
+        let html = page(events: [event("c1", cents: 100)], activity: digest(unavailable: [.cli]))
+        XCTAssertTrue(html.contains("CLI activity store could not be read"))
+        XCTAssertFalse(html.contains("editor activity store could not be read"))
+    }
+
+    func testBothUnreadableSourcesAreNamedTogether() {
+        let html = page(events: [event("c1", cents: 100)],
+                        activity: digest(unavailable: [.gui, .cli]))
+        XCTAssertTrue(html.contains("Neither the editor&#39;s nor the CLI&#39;s"))
+        XCTAssertTrue(html.contains("could not be read"))
+    }
+
+    /// Both completeness states can be true at once: the feed was short *and* a local
+    /// store was unreadable.
+    func testThePartialAndUnavailableBannersCanAppearTogether() {
+        let html = page(events: [event("c1", cents: 100)],
+                        activity: digest(unavailable: [.gui]), truncated: true)
+        XCTAssertTrue(html.contains("did not cover everything the billing API declared"))
+        XCTAssertTrue(html.contains("editor activity store could not be read"))
     }
 
     // MARK: - Well-formedness

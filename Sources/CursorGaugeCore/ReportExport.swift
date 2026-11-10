@@ -22,14 +22,23 @@ public struct ReportExport: Encodable {
     public let commands: [Command]
     public let prompts: Prompts
     public let conversations: [Conversation]
-    /// Set when the events feed hit its page cap, so a consumer knows the totals are a floor.
+    /// Set when the event feed is incomplete — the page cap, or fewer rows than the API
+    /// declared — so a consumer knows the totals are a floor.
     public let partial: Bool
-    /// False when Cursor's local database could not be read, so every activity field is zero
-    /// for reasons that have nothing to do with how much work was done.
+    /// Whether any local activity rows were read. Pair with `activityAvailability` to tell
+    /// a genuinely quiet cycle apart from an unreadable store.
     public let hasActivity: Bool
+    /// Per-front-end readability. Always contains both keys; availability does not imply
+    /// that any activity was recorded.
+    public let activityAvailability: ActivityAvailability
     /// Whether prompt text is present. Stated so a consumer never has to guess whether an
     /// empty `promptText` means "not collected" or "no prompts".
     public let includesPromptText: Bool
+
+    public struct ActivityAvailability: Encodable {
+        public let gui: String
+        public let cli: String
+    }
 
     public struct Cycle: Encodable {
         public let start: Date
@@ -224,6 +233,10 @@ public struct ReportExport: Encodable {
             conversations: conversations,
             partial: report.truncated,
             hasActivity: report.hasActivity,
+            activityAvailability: ActivityAvailability(
+                gui: report.unavailableActivitySources.contains(.gui) ? "unavailable" : "available",
+                cli: report.unavailableActivitySources.contains(.cli) ? "unavailable" : "available"
+            ),
             includesPromptText: promptText != nil
         )
     }

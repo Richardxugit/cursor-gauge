@@ -807,6 +807,46 @@ extension CursorAPITests {
         XCTAssertEqual(endless.calls, 3, "must stop at the cap rather than page forever")
         XCTAssertTrue(snapshot.sessionsTruncated)
     }
+
+    /// A short page can also hide rows: when the server declares more events than it
+    /// served, the snapshot must say so even though the page cap was never reached.
+    func testAShortPageServingFewerThanDeclaredIsTruncated() async throws {
+        final class ShortPageTransport: Transport, @unchecked Sendable {
+            let base: StubTransport
+            private let lock = NSLock()
+            private(set) var calls = 0
+            init(base: StubTransport) { self.base = base }
+
+            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+                guard request.url?.path == "/api/dashboard/get-filtered-usage-events" else {
+                    return try await base.send(request)
+                }
+                lock.lock(); calls += 1; lock.unlock()
+                let rows = (0..<3).map { index in
+                    "{\"timestamp\":\"1785658176745\",\"chargedCents\":1,\"conversationId\":\"c\(index)\"}"
+                }.joined(separator: ",")
+                // Declared total exceeds the served rows: paging stops on the short page,
+                // and the snapshot must still call itself partial.
+                let json = "{\"totalUsageEventsCount\":17,\"usageEventsDisplay\":[\(rows)]}"
+                return (Data(json.utf8), HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        }
+
+        routeHappyPath()
+        transport.routes["/api/dashboard/get-team-spend"] = (Fixture.spendWithLimit, 200)
+        let short = ShortPageTransport(base: transport)
+        let api = CursorAPI(
+            credentials: credentials, transport: short,
+            naming: StubNaming([:]), clock: { self.now }
+        )
+
+        let snapshot = try await api.fetchSnapshot()
+        XCTAssertEqual(short.calls, 1, "the short page ends paging")
+        XCTAssertEqual(snapshot.events.count, 3)
+        XCTAssertTrue(snapshot.sessionsTruncated,
+                      "fewer rows than declared is partial, even without hitting the cap")
+    }
 }
 
 // MARK: - Async throwing helper

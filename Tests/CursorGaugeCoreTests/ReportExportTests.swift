@@ -16,6 +16,7 @@ final class ReportExportTests: XCTestCase {
         events: [SessionEvent],
         catalog: [String: SessionRecord] = [:],
         activity: ActivityDigest = .empty,
+        truncated: Bool = false,
         promptText: [String: [String]]? = nil
     ) -> ReportExport {
         let snapshot = UsageSnapshot(
@@ -24,6 +25,7 @@ final class ReportExportTests: XCTestCase {
             limitDollars: 200, cycleStart: cycleStart, cycleEnd: cycleEnd,
             todayCents: 0, models: [], lastActivity: nil, capturedAt: now,
             sessions: SessionBreakdown.build(events: events, catalog: catalog),
+            sessionsTruncated: truncated,
             events: events
         )
         let report = UsageReport.build(
@@ -34,9 +36,13 @@ final class ReportExportTests: XCTestCase {
                                   promptText: promptText, timeZone: utc)
     }
 
-    private func digest(_ conversations: [String: ConversationActivity]) -> ActivityDigest {
+    private func digest(
+        _ conversations: [String: ConversationActivity] = [:],
+        unavailable: Set<ActivitySource> = []
+    ) -> ActivityDigest {
         ActivityDigest(tools: [], prompts: .empty, files: [],
-                       byConversation: conversations, daily: [])
+                       byConversation: conversations, daily: [],
+                       unavailableSources: unavailable)
     }
 
     private func object(_ export: ReportExport) throws -> [String: Any] {
@@ -133,9 +139,38 @@ final class ReportExportTests: XCTestCase {
     func testTheDocumentIsValidJSONAndDeclaresItsSchema() throws {
         let parsed = try object(export(events: [event("c1", cents: 100)]))
         XCTAssertEqual(parsed["schema"] as? String, "cursor-gauge/report/1")
-        for key in ["cycle", "attribution", "conversations", "daily", "tools", "models"] {
+        for key in ["cycle", "attribution", "conversations", "daily", "tools", "models",
+                    "activityAvailability"] {
             XCTAssertNotNil(parsed[key], "missing \(key)")
         }
+    }
+
+    /// A consumer must be able to tell a quiet cycle from an unreadable database per
+    /// source, without guessing — and both keys are always present.
+    func testAvailabilityIsExportedPerSource() throws {
+        let parsed = try object(
+            export(events: [event("c1", cents: 100)], activity: digest(unavailable: [.cli]))
+        )
+        let availability = try XCTUnwrap(parsed["activityAvailability"] as? [String: String])
+        XCTAssertEqual(availability, ["cli": "unavailable", "gui": "available"])
+    }
+
+    func testAReadableStoreExportsBothSourcesAvailable() throws {
+        let parsed = try object(export(events: [event("c1", cents: 100)], activity: .empty))
+        let availability = try XCTUnwrap(parsed["activityAvailability"] as? [String: String])
+        XCTAssertEqual(availability, ["cli": "available", "gui": "available"],
+                       "a quiet readable store is still available")
+    }
+
+    /// A short page with a larger declared total is partial even though the page cap was
+    /// never hit.
+    func testAShortPageIsExportedAsPartial() {
+        let complete = export(events: [event("c1", cents: 100)])
+        XCTAssertFalse(complete.partial)
+
+        let partial = export(events: [event("c1", cents: 100)], truncated: true)
+        XCTAssertTrue(partial.partial,
+                      "fewer rows than declared must read partial in JSON")
     }
 
     func testDatesAreISO8601AndDaysAreCalendarDates() throws {

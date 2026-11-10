@@ -76,7 +76,7 @@ enum DryRun {
         }
 
         let display = sessions.display(limit: 5)
-        output("sessions\(snapshot.sessionsTruncated ? "  (PARTIAL — page cap hit)" : "")")
+        output("sessions\(snapshot.sessionsTruncated ? "  (PARTIAL — feed incomplete)" : "")")
         for node in display.rows {
             output("  \(Format.money(cents: node.rolledCents).padded(8)) \(node.name ?? "?")")
             for child in node.children {
