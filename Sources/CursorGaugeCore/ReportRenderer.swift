@@ -155,12 +155,21 @@ public enum ReportRenderer {
         // entirely whenever Cursor's database could not be read.
         guard !report.workspaces.isEmpty || !residuals.isEmpty else { return "" }
 
+        // Two repos can share a directory name. Only then does the page spell out the full
+        // path, so the normal case stays as clean as before.
+        let duplicateNames = Set(Dictionary(grouping: report.workspaces, by: { $0.workspace })
+            .filter { $0.value.count > 1 }.keys)
         let rows = report.workspaces.map { repo in
-            bar(
+            var note = String(repo.sessions) + " chat" + (repo.sessions == 1 ? "" : "s")
+                + " · " + count(repo.toolCalls) + " tool calls · " + count(repo.prompts) + " prompts"
+            if duplicateNames.contains(repo.workspace) {
+                note += " · " + (repo.workspacePath ?? "distinct paths")
+            }
+            return bar(
                 label: repo.workspace,
                 value: Format.money(cents: repo.cents),
                 fraction: divide(repo.cents, report.workspaces.first?.cents),
-                note: "\(repo.sessions) chat\(repo.sessions == 1 ? "" : "s") · \(count(repo.toolCalls)) tool calls · \(count(repo.prompts)) prompts"
+                note: note
             )
         }.joined()
 

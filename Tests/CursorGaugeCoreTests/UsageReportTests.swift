@@ -29,11 +29,12 @@ final class UsageReportTests: XCTestCase {
     }
 
     private func conversation(
-        workspace: String?, prompts: Int = 0, toolCalls: Int = 0, linesAdded: Int = 0,
-        source: ActivitySource = .gui
+        workspace: String?, path: String? = nil, prompts: Int = 0, toolCalls: Int = 0,
+        linesAdded: Int = 0, source: ActivitySource = .gui
     ) -> ConversationActivity {
         ConversationActivity(
-            workspace: workspace, workspacePath: workspace.map { "/Users/pxu/Desktop/\($0)" },
+            workspace: workspace,
+            workspacePath: path ?? workspace.map { "/Users/pxu/Desktop/\($0)" },
             mode: "agent", prompts: prompts, toolCalls: toolCalls, linesAdded: linesAdded,
             source: source
         )
@@ -124,6 +125,52 @@ final class UsageReportTests: XCTestCase {
         XCTAssertEqual(repo?.prompts, 4)
         XCTAssertEqual(repo?.toolCalls, 90)
         XCTAssertEqual(repo?.linesAdded, 250)
+    }
+
+    // MARK: - Repository identity
+
+    /// Two directories can share a basename — `/clients/a/website` and `/clients/b/website`
+    /// are both called `website`. Attributing by name alone folds one client's spend into
+    /// the other's, so the full path has to be the identity.
+    func testSameNamedReposInDifferentDirectoriesStaySeparate() throws {
+        let result = report(
+            events: [event("a-1", cents: 120), event("b-1", cents: 80)],
+            activity: activity([
+                "a-1": conversation(workspace: "website", path: "/clients/a/website",
+                                    prompts: 3, toolCalls: 30),
+                "b-1": conversation(workspace: "website", path: "/clients/b/website",
+                                    prompts: 1, toolCalls: 10),
+            ])
+        )
+        XCTAssertEqual(result.workspaces.count, 2,
+                       "two directories that share a basename are two repos")
+        let a = try XCTUnwrap(result.workspaces.first { $0.workspacePath == "/clients/a/website" })
+        XCTAssertEqual(a.workspace, "website")
+        XCTAssertEqual(a.cents, 120)
+        XCTAssertEqual(a.sessions, 1)
+        XCTAssertEqual(a.prompts, 3)
+        XCTAssertEqual(a.toolCalls, 30)
+        let b = try XCTUnwrap(result.workspaces.first { $0.workspacePath == "/clients/b/website" })
+        XCTAssertEqual(b.workspace, "website")
+        XCTAssertEqual(b.cents, 80)
+        XCTAssertEqual(b.sessions, 1)
+        XCTAssertEqual(b.prompts, 1)
+        XCTAssertEqual(b.toolCalls, 10)
+    }
+
+    /// The path is the identity, so chats in the *same* directory still merge into one row.
+    func testChatsInTheSameDirectoryStillMerge() {
+        let result = report(
+            events: [event("c1", cents: 100), event("c2", cents: 50)],
+            activity: activity([
+                "c1": conversation(workspace: "website", path: "/clients/a/website"),
+                "c2": conversation(workspace: "website", path: "/clients/a/website"),
+            ])
+        )
+        XCTAssertEqual(result.workspaces.count, 1)
+        XCTAssertEqual(result.workspaces.first?.cents, 150)
+        XCTAssertEqual(result.workspaces.first?.sessions, 2)
+        XCTAssertEqual(result.workspaces.first?.workspacePath, "/clients/a/website")
     }
 
     // MARK: - The three residual buckets

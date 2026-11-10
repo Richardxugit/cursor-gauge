@@ -66,6 +66,9 @@ public struct ReportExport: Encodable {
 
     public struct Workspace: Encodable {
         public let workspace: String
+        /// Full directory path when the local record carried one, so two same-named repos
+        /// stay separable downstream.
+        public let workspacePath: String?
         public let cents: Double
         public let conversations: Int
         public let prompts: Int
@@ -211,7 +214,8 @@ public struct ReportExport: Encodable {
             attribution: Attribution(
                 totalCents: report.totalCents,
                 workspaces: report.workspaces.map {
-                    Workspace(workspace: $0.workspace, cents: $0.cents, conversations: $0.sessions,
+                    Workspace(workspace: $0.workspace, workspacePath: $0.workspacePath,
+                              cents: $0.cents, conversations: $0.sessions,
                               prompts: $0.prompts, toolCalls: $0.toolCalls, linesAdded: $0.linesAdded)
                 },
                 cloudCents: report.cloudCents,

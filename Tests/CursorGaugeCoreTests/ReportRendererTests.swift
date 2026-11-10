@@ -77,6 +77,38 @@ final class ReportRendererTests: XCTestCase {
         XCTAssertFalse(html.contains("<b>evil</b>"))
     }
 
+    // MARK: - Repository identity
+
+    /// Two repos can share a basename. The page must show which directory each row means,
+    /// not two bars both labelled `website`.
+    func testDuplicateRepoBasenamesAreDisambiguatedByFullPath() {
+        let html = page(
+            events: [event("a-1", cents: 120), event("b-1", cents: 80)],
+            activity: digest([
+                "a-1": ConversationActivity(workspace: "website", workspacePath: "/clients/a/website",
+                                            prompts: 3, toolCalls: 30),
+                "b-1": ConversationActivity(workspace: "website", workspacePath: "/clients/b/website",
+                                            prompts: 1, toolCalls: 10),
+            ])
+        )
+        XCTAssertTrue(html.contains("/clients/a/website"),
+                      "the first directory's full path is named")
+        XCTAssertTrue(html.contains("/clients/b/website"),
+                      "the second directory's full path is named")
+    }
+
+    /// A unique basename needs no disambiguation, so the path stays off the page.
+    func testAUniqueRepoBasenameShowsNoPath() {
+        let html = page(
+            events: [event("c1", cents: 100)],
+            activity: digest(["c1": ConversationActivity(workspace: "website",
+                                                         workspacePath: "/clients/a/website")])
+        )
+        XCTAssertTrue(html.contains("website"))
+        XCTAssertFalse(html.contains("/clients/a/website"),
+                       "a basename that appears once is already unambiguous")
+    }
+
     // MARK: - Content
 
     func testTheHeadlineFiguresAppear() {

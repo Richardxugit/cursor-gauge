@@ -1,9 +1,18 @@
 import Foundation
 
+/// A repository key that cannot confuse two different directories that share a basename,
+/// nor a pathless record with a path-carrying one.
+private enum WorkspaceIdentity: Hashable {
+    case path(String)
+    case name(String)
+}
+
 /// What one repository cost, and what was done inside it.
 public struct WorkspaceSpend: Equatable, Identifiable {
     /// The repo's directory name, e.g. `ko-services`.
     public let workspace: String
+    /// Full path of the repo directory when the local record carried one.
+    public let workspacePath: String?
     public let cents: Double
     /// Distinct chats that billed against this repo.
     public let sessions: Int
@@ -12,7 +21,7 @@ public struct WorkspaceSpend: Equatable, Identifiable {
     /// Lifetime lines for the chats involved — see `ConversationActivity`.
     public let linesAdded: Int
 
-    public var id: String { workspace }
+    public var id: String { workspacePath ?? "name:\(workspace)" }
 }
 
 /// One chat, costed and described.
@@ -138,32 +147,36 @@ public struct UsageReport {
         // the totals cannot drift apart. A repo when the chat is known locally; otherwise
         // the cloud bucket if the request ran headless, because "ran in the cloud" says
         // something where "unattributed" says nothing; otherwise unattributed.
-        var byWorkspace: [String: (cents: Double, sessions: Set<String>)] = [:]
+        var byWorkspace: [WorkspaceIdentity: (cents: Double, sessions: Set<String>, path: String?, name: String)] = [:]
         var cloudCents = 0.0
         var cloudConversations: Set<String> = []
         var unattributedCents = 0.0
 
         for event in events {
-            let workspace = event.conversationID.flatMap { activity.byConversation[$0]?.workspace }
-            if let workspace, let id = event.conversationID {
-                var entry = byWorkspace[workspace] ?? (0, [])
-                entry.cents += event.cents
-                entry.sessions.insert(id)
-                byWorkspace[workspace] = entry
-            } else if event.isCloud {
-                cloudCents += event.cents
-                if let id = event.conversationID { cloudConversations.insert(id) }
-            } else {
-                unattributedCents += event.cents
+            guard let id = event.conversationID, let record = activity.byConversation[id],
+                  let workspace = record.workspace else {
+                if event.isCloud {
+                    cloudCents += event.cents
+                    if let id = event.conversationID { cloudConversations.insert(id) }
+                } else {
+                    unattributedCents += event.cents
+                }
+                continue
             }
+            let identity: WorkspaceIdentity = record.workspacePath.map { .path($0) } ?? .name(workspace)
+            var entry = byWorkspace[identity] ?? (0, [], record.workspacePath, workspace)
+            entry.cents += event.cents
+            entry.sessions.insert(id)
+            byWorkspace[identity] = entry
         }
 
         // Activity rolls up per repo from the chats that billed against it, so the numbers
         // beside a repo's cost describe the same chats that produced it.
-        let workspaces = byWorkspace.map { name, entry -> WorkspaceSpend in
+        let workspaces = byWorkspace.map { _, entry -> WorkspaceSpend in
             let records = entry.sessions.compactMap { activity.byConversation[$0] }
             return WorkspaceSpend(
-                workspace: name,
+                workspace: entry.name,
+                workspacePath: entry.path,
                 cents: entry.cents,
                 sessions: entry.sessions.count,
                 prompts: records.reduce(0) { $0 + $1.prompts },

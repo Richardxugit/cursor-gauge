@@ -220,6 +220,23 @@ final class ReportExportTests: XCTestCase {
         XCTAssertEqual(result.attribution.workspaces.first?.workspace, "ko-services")
     }
 
+    /// The JSON workspace objects carry the full directory path, so a consumer can tell
+    /// two same-named repos apart the same way the report does.
+    func testWorkspaceObjectsCarryTheirFullPath() throws {
+        let result = export(
+            events: [event("a-1", cents: 120), event("b-1", cents: 80)],
+            activity: digest([
+                "a-1": ConversationActivity(workspace: "website", workspacePath: "/clients/a/website"),
+                "b-1": ConversationActivity(workspace: "website", workspacePath: "/clients/b/website"),
+            ])
+        )
+        let parsed = try object(result)
+        let attribution = try XCTUnwrap(parsed["attribution"] as? [String: Any])
+        let workspaces = try XCTUnwrap(attribution["workspaces"] as? [[String: Any]])
+        let paths = Set(workspaces.compactMap { $0["workspacePath"] as? String })
+        XCTAssertEqual(paths, ["/clients/a/website", "/clients/b/website"])
+    }
+
     func testAnEmptyCycleStillEncodes() throws {
         let parsed = try object(export(events: []))
         XCTAssertEqual((parsed["conversations"] as? [Any])?.count, 0)
