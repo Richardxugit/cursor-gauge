@@ -86,6 +86,20 @@ final class ReportExportTests: XCTestCase {
         XCTAssertEqual(result.conversations.first { $0.id == "c1" }?.isCloud, false)
     }
 
+    /// A cloud agent has no local record, so which front end ran it is genuinely
+    /// unknowable. The export must say `unknown`, not guess `gui`.
+    func testALedgerOnlyCloudEventExportsAsUnknownSource() throws {
+        let result = export(events: [event("bc-1", cents: 150, cloud: true)])
+        let conversation = try XCTUnwrap(result.conversations.first)
+        XCTAssertEqual(conversation.source, .unknown)
+        XCTAssertTrue(conversation.isCloud)
+        XCTAssertEqual(conversation.cents, 150)
+
+        let parsed = try object(result)
+        let conversations = try XCTUnwrap(parsed["conversations"] as? [[String: Any]])
+        XCTAssertEqual(conversations.first?["source"] as? String, "unknown")
+    }
+
     /// The per-chat tool breakdown is the evidence a consumer classifies from, so it has to
     /// survive the export rather than being flattened into a single count.
     func testPerConversationToolBreakdownIsExported() {

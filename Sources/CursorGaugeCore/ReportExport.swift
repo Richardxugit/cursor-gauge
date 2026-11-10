@@ -121,8 +121,10 @@ public struct ReportExport: Encodable {
         public let workspace: String?
         /// `agent`, `chat` or `debug` in the editor; `cli` for a terminal agent.
         public let mode: String?
-        /// Which front end ran this: `gui` (the editor) or `cli` (`cursor-agent`). The two
-        /// use different tool names for comparable work, so never pool them without checking.
+        /// Which front end ran this: `gui` (the editor), `cli` (`cursor-agent`), or
+        /// `unknown` (billed work with no local record — cloud agents and ledger-only
+        /// events). The two known fronts use different tool names for comparable work, so
+        /// never pool them without checking.
         public let source: ActivitySource
         public let cents: Double
         public let requests: Int
@@ -169,12 +171,13 @@ public struct ReportExport: Encodable {
         let conversations = Set(costs.keys).union(active.keys).map { id -> Conversation in
             let cost = costs[id]
             let record = activity.byConversation[id]
+            let source = record?.source ?? .unknown
             return Conversation(
                 id: id,
                 name: cost?.name,
                 workspace: record?.workspace,
                 mode: record?.mode,
-                source: record?.source ?? .gui,
+                source: source,
                 cents: cost?.cents ?? 0,
                 requests: cost?.requests ?? 0,
                 isCloud: cost?.isCloud ?? false,

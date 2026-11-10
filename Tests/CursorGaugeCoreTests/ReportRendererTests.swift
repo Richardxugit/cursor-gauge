@@ -174,6 +174,22 @@ final class ReportRendererTests: XCTestCase {
         XCTAssertTrue(html.contains("editor activity store could not be read"))
     }
 
+    /// Residual spend that has no local record — unknown source — must not be shown as
+    /// editor work. The editor/CLI split only renders when both fronts actually ran, so
+    /// unknown-only spend cannot invent an editor figure.
+    func testUnknownSpendDoesNotInventAnEditorFigure() {
+        let html = page(
+            events: [event("cli-1", cents: 100), event("ghost", cents: 150)],
+            activity: digest([
+                "cli-1": ConversationActivity(workspace: "ko-services", source: .cli),
+            ])
+        )
+        XCTAssertFalse(html.contains("Cursor the editor $1.50"),
+                       "unknown spend was folded into the editor side")
+        XCTAssertFalse(html.contains("Cursor the editor"),
+                       "with no editor spend the split must not render")
+    }
+
     // MARK: - Well-formedness
 
     func testThePageIsSelfContained() {
