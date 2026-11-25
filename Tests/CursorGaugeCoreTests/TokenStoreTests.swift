@@ -1,5 +1,6 @@
 import XCTest
 import SQLite3
+import CommonCrypto
 @testable import CursorGaugeCore
 
 final class TokenStoreTests: XCTestCase {
@@ -171,6 +172,135 @@ final class TokenStoreTests: XCTestCase {
         try FileManager.default.removeItem(at: url)
         XCTAssertThrowsError(try store.load()) { error in
             XCTAssertEqual(error as? TokenError, .cursorNotInstalled)
+        }
+    }
+
+    // MARK: - Cursor 3.x encrypted-at-rest tokens (cursor-safe-storage:v1)
+
+    /// Encrypts exactly the way Electron safeStorage does: PBKDF2-HMAC-SHA1
+    /// (`saltysalt`, 1003 rounds, 16 bytes) → AES-128-CBC with an IV of 16 spaces,
+    /// a `v10` header, then the `cursor-safe-storage:v1:` base64 wrapper.
+    private func encryptSafeStorage(_ plaintext: String, password: String) -> String {
+        var key = [UInt8](repeating: 0, count: 16)
+        let passwordBytes = Array(password.utf8)
+        let salt = Array("saltysalt".utf8)
+        let status = CCKeyDerivationPBKDF(
+            CCPBKDFAlgorithm(kCCPBKDF2),
+            passwordBytes, passwordBytes.count,
+            salt, salt.count,
+            CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1),
+            1003,
+            &key, key.count
+        )
+        XCTAssertTrue(status == kCCSuccess)
+
+        let iv = [UInt8](repeating: 0x20, count: 16)
+        let input = Array(plaintext.utf8)
+        var output = [UInt8](repeating: 0, count: input.count + 16)
+        var outputLength = 0
+        let cryptStatus = CCCrypt(
+            CCOperation(kCCEncrypt),
+            CCAlgorithm(kCCAlgorithmAES128),
+            CCOptions(kCCOptionPKCS7Padding),
+            key, key.count,
+            iv,
+            input, input.count,
+            &output, output.count,
+            &outputLength
+        )
+        XCTAssertTrue(cryptStatus == kCCSuccess)
+
+        let blob = Data("v10".utf8) + Data(output.prefix(outputLength))
+        return "cursor-safe-storage:v1:" + blob.base64EncodedString()
+    }
+
+    private func storeWithPassword(_ passwordProvider: @escaping () throws -> String?, at url: URL) -> TokenStore {
+        TokenStore(
+            databaseURL: url,
+            clock: { Date(timeIntervalSince1970: 1_785_658_392) },
+            keychainPassword: passwordProvider
+        )
+    }
+
+    /// Generated externally with Node `crypto` (Chromium-compatible algorithm), so this
+    /// test does not merely mirror the in-test encryptor.
+    private static let staticStoredToken =
+        "cursor-safe-storage:v1:djEwKNhbi0bmNkwfeYMpivV3Hr4onuZlNQ1lE+tVRvd6drcP5ziEICAl0qQAlsMHaftKDWq+ql57a7VhE3IB2SxrhiTBB6glxm9i9ciP6nUe1Jw="
+
+    func testDecryptsStaticSafeStorageFixture() throws {
+        let plaintext = try TokenStore.decryptSafeStorage(Self.staticStoredToken, password: "cursor-key")
+        let claims = try TokenStore.decodeJWTClaims(plaintext)
+        XCTAssertEqual(claims.sub, "user_fixture")
+        XCTAssertEqual(claims.expiresAt.timeIntervalSince1970, 2_000_000_000, accuracy: 1)
+    }
+
+    func testLoadDecryptsEncryptedDatabaseToken() throws {
+        let expiry = Date(timeIntervalSince1970: 1_790_839_766)
+        let stored = encryptSafeStorage(
+            makeJWT(sub: "auth0|user_ENC", expiresAt: expiry),
+            password: "cursor-key"
+        )
+        let url = try makeDatabase(token: stored)
+        let store = storeWithPassword({ "cursor-key" }, at: url)
+
+        let credentials = try store.load()
+
+        XCTAssertEqual(credentials.userSub, "user_ENC")
+        XCTAssertEqual(credentials.expiresAt.timeIntervalSince1970, expiry.timeIntervalSince1970, accuracy: 1)
+        XCTAssertTrue(credentials.accessToken.hasPrefix("header."))
+    }
+
+    func testLoadReportsDecryptionFailedForWrongPassword() throws {
+        let stored = encryptSafeStorage(makeJWT(sub: "auth0|user_X", expiresAt: Date(timeIntervalSince1970: 1_790_839_766)), password: "right-key")
+        let url = try makeDatabase(token: stored)
+        let store = storeWithPassword({ "wrong-key" }, at: url)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            XCTAssertEqual(error as? TokenError, .decryptionFailed)
+        }
+    }
+
+    func testLoadReportsKeychainUnavailableWhenPasswordMissing() throws {
+        let stored = encryptSafeStorage(makeJWT(sub: "auth0|user_X", expiresAt: Date(timeIntervalSince1970: 1_790_839_766)), password: "cursor-key")
+        let url = try makeDatabase(token: stored)
+        let store = storeWithPassword({ nil }, at: url)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            guard case .keychainUnavailable(let reason)? = error as? TokenError else {
+                return XCTFail("expected .keychainUnavailable, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("Cursor Safe Storage"))
+        }
+    }
+
+    func testLoadReportsKeychainUnavailableWhenProviderThrows() throws {
+        let stored = encryptSafeStorage(makeJWT(sub: "auth0|user_X", expiresAt: Date(timeIntervalSince1970: 1_790_839_766)), password: "cursor-key")
+        let url = try makeDatabase(token: stored)
+        let store = storeWithPassword({ throw NSError(domain: "Keychain", code: -128, userInfo: nil) }, at: url)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            guard case .keychainUnavailable = error as? TokenError else {
+                return XCTFail("expected .keychainUnavailable, got \(error)")
+            }
+        }
+    }
+
+    func testMalformedSafeStoragePayloadReportsDecryptionFailed() throws {
+        let url = try makeDatabase(token: "cursor-safe-storage:v1:not-base64!!")
+        let store = storeWithPassword({ "cursor-key" }, at: url)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            XCTAssertEqual(error as? TokenError, .decryptionFailed)
+        }
+    }
+
+    func testSafeStoragePayloadWithoutV10HeaderReportsDecryptionFailed() throws {
+        let junk = Data("no-v10-header-here".utf8).base64EncodedString()
+        let url = try makeDatabase(token: "cursor-safe-storage:v1:\(junk)")
+        let store = storeWithPassword({ "cursor-key" }, at: url)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            XCTAssertEqual(error as? TokenError, .decryptionFailed)
         }
     }
 }

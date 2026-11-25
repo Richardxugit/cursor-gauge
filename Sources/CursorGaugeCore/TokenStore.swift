@@ -1,5 +1,7 @@
 import Foundation
 import SQLite3
+import CommonCrypto
+import Security
 
 /// Credentials borrowed from the locally-installed Cursor app.
 ///
@@ -30,6 +32,8 @@ public enum TokenError: Error, Equatable, CustomStringConvertible {
     case expired(Date)
     case malformedToken
     case unreadable(String)
+    case keychainUnavailable(String)
+    case decryptionFailed
 
     public var description: String {
         switch self {
@@ -38,6 +42,10 @@ public enum TokenError: Error, Equatable, CustomStringConvertible {
         case .expired: return "Cursor session expired — open Cursor to sign in again"
         case .malformedToken: return "Cursor's stored token wasn't in the expected format"
         case .unreadable(let why): return "Couldn't read Cursor's data: \(why)"
+        case .keychainUnavailable(let why):
+            return "Cursor's login is encrypted at rest, but its Keychain key couldn't be read (\(why)). Allow CursorGauge Keychain access or sign in to Cursor again."
+        case .decryptionFailed:
+            return "Cursor's encrypted login couldn't be decrypted — sign in to Cursor again"
         }
     }
 }
@@ -56,17 +64,25 @@ public protocol CredentialsProviding: AnyObject {
 public final class TokenStore: CredentialsProviding {
     private let databaseURL: URL
     private let clock: () -> Date
+    private let keychainPassword: () throws -> String?
     private var cached: CursorCredentials?
     private let lock = NSLock()
+
+    static let safeStoragePrefix = "cursor-safe-storage:v1:"
 
     public static var defaultDatabaseURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
     }
 
-    public init(databaseURL: URL = TokenStore.defaultDatabaseURL, clock: @escaping () -> Date = Date.init) {
+    public init(
+        databaseURL: URL = TokenStore.defaultDatabaseURL,
+        clock: @escaping () -> Date = Date.init,
+        keychainPassword: (() throws -> String?)? = nil
+    ) {
         self.databaseURL = databaseURL
         self.clock = clock
+        self.keychainPassword = keychainPassword ?? TokenStore.defaultKeychainPassword
     }
 
     public func invalidate() {
@@ -86,8 +102,24 @@ public final class TokenStore: CredentialsProviding {
             throw TokenError.cursorNotInstalled
         }
 
-        let raw = try readValue(forKey: "cursorAuth/accessToken")
-        guard let raw, !raw.isEmpty else { throw TokenError.notSignedIn }
+        let stored = try readValue(forKey: "cursorAuth/accessToken")
+        guard let stored, !stored.isEmpty else { throw TokenError.notSignedIn }
+
+        let raw: String
+        if stored.hasPrefix(Self.safeStoragePrefix) {
+            do {
+                guard let password = try keychainPassword(), !password.isEmpty else {
+                    throw TokenError.keychainUnavailable("Keychain item 'Cursor Safe Storage' is missing or empty")
+                }
+                raw = try Self.decryptSafeStorage(stored, password: password)
+            } catch let error as TokenError {
+                throw error
+            } catch {
+                throw TokenError.keychainUnavailable(error.localizedDescription)
+            }
+        } else {
+            raw = stored
+        }
 
         let claims = try Self.decodeJWTClaims(raw)
         let credentials = CursorCredentials(
@@ -143,6 +175,86 @@ public final class TokenStore: CredentialsProviding {
         default:
             throw TokenError.unreadable(String(cString: sqlite3_errmsg(handle)))
         }
+    }
+
+    // MARK: - Cursor safeStorage decryption
+
+    /// Reads the password Cursor's Electron safeStorage keeps in the macOS Keychain.
+    /// Returns `nil` when the item is absent (older Cursor installs never created it).
+    static func defaultKeychainPassword() throws -> String? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Cursor Safe Storage",
+            kSecAttrAccount as String: "Cursor Key",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data else { return nil }
+            return String(data: data, encoding: .utf8)
+        case errSecItemNotFound:
+            return nil
+        default:
+            let message = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
+            throw TokenError.keychainUnavailable(message)
+        }
+    }
+
+    /// Decrypts a `cursor-safe-storage:v1:` value (Electron safeStorage: `v10` header +
+    /// AES-128-CBC, PBKDF2-HMAC-SHA1 key from `saltysalt`/1003 rounds, IV of 16 spaces).
+    /// Unprefixed values are returned unchanged. Throws `TokenError.decryptionFailed` when
+    /// the payload is not a well-formed, decryptable blob.
+    static func decryptSafeStorage(_ stored: String, password: String) throws -> String {
+        guard stored.hasPrefix(safeStoragePrefix) else { return stored }
+
+        let encoded = String(stored.dropFirst(safeStoragePrefix.count))
+        guard let payload = Data(base64Encoded: encoded), payload.count > 3 else {
+            throw TokenError.decryptionFailed
+        }
+        guard String(data: payload.prefix(3), encoding: .utf8) == "v10" else {
+            throw TokenError.decryptionFailed
+        }
+        let ciphertext = Data(payload.dropFirst(3))
+
+        var key = [UInt8](repeating: 0, count: 16)
+        let passwordBytes = Array(password.utf8)
+        let salt = Array("saltysalt".utf8)
+        let derived = CCKeyDerivationPBKDF(
+            CCPBKDFAlgorithm(kCCPBKDF2),
+            passwordBytes, passwordBytes.count,
+            salt, salt.count,
+            CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1),
+            1003,
+            &key, key.count
+        )
+        guard derived == kCCSuccess else { throw TokenError.decryptionFailed }
+
+        let iv = [UInt8](repeating: 0x20, count: 16)
+        var output = [UInt8](repeating: 0, count: ciphertext.count + 16)
+        var outputLength = 0
+        let status = ciphertext.withUnsafeBytes { buffer -> CCCryptorStatus in
+            CCCrypt(
+                CCOperation(kCCDecrypt),
+                CCAlgorithm(kCCAlgorithmAES128),
+                CCOptions(kCCOptionPKCS7Padding),
+                key, key.count,
+                iv,
+                buffer.baseAddress, ciphertext.count,
+                &output, output.count,
+                &outputLength
+            )
+        }
+        guard status == kCCSuccess else { throw TokenError.decryptionFailed }
+
+        guard let plaintext = String(bytes: output.prefix(outputLength), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !plaintext.isEmpty
+        else { throw TokenError.decryptionFailed }
+
+        return plaintext
     }
 
     // MARK: - JWT
